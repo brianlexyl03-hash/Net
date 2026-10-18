@@ -42,6 +42,10 @@ class TcpSession(
     private var route: Route? = null
     @Volatile
     private var routeName = ""
+    @Volatile
+    private var routeKey = ""
+    @Volatile
+    private var tunnel: Shadowsocks.Tunnel? = null
     private var clientFin = false
     private var serverFinSent = false
     private var zeroWindowSent = false
@@ -66,22 +70,35 @@ class TcpSession(
         val tried = HashSet<String>()
         var connected: Socket? = null
         var usedRoute: Route? = null
+        var openedTunnel: Shadowsocks.Tunnel? = null
+        val exit = ExitServer.active
         for (attempt in 0 until 3) {
             val candidate = routes.acquire(tried) ?: break
             tried.add(candidate.id)
-            val s = Socket()
             try {
-                candidate.network.bindSocket(s)
-                s.tcpNoDelay = true
-                s.connect(InetSocketAddress(PacketUtil.toAddress(serverIp), serverPort), 8_000)
-                connected = s
+                if (exit != null) {
+                    val t = Shadowsocks.open(candidate.network, exit, serverIp, null, serverPort)
+                    openedTunnel = t
+                    connected = t.socket
+                } else {
+                    val s = Socket()
+                    try {
+                        candidate.network.bindSocket(s)
+                        s.tcpNoDelay = true
+                        s.connect(InetSocketAddress(PacketUtil.toAddress(serverIp), serverPort), 8_000)
+                        connected = s
+                    } catch (error: Exception) {
+                        try { s.close() } catch (_: IOException) { }
+                        throw error
+                    }
+                }
                 usedRoute = candidate
                 break
             } catch (_: Exception) {
-                try { s.close() } catch (_: IOException) { }
                 routes.release(candidate)
             }
         }
+        tunnel = openedTunnel
         val sock = connected
         val chosen = usedRoute
         if (sock == null || chosen == null) {
@@ -102,6 +119,7 @@ class TcpSession(
                 socket = sock
                 route = chosen
                 routeName = chosen.label
+                routeKey = chosen.key
                 emit(PacketUtil.SYN or PacketUtil.ACK, null, 0, 0, PacketUtil.MSS)
                 mySeq = (mySeq + 1) and PacketUtil.MASK
                 acked = mySeq
@@ -126,9 +144,15 @@ class TcpSession(
                     try { sock.shutdownOutput() } catch (_: IOException) { }
                     return
                 }
-                out.write(chunk)
-                out.flush()
+                val t = tunnel
+                if (t != null) {
+                    t.output.write(chunk)
+                } else {
+                    out.write(chunk)
+                    out.flush()
+                }
                 VpnStats.addUp(routeName, chunk.size.toLong())
+                Bundles.add(routeKey, chunk.size.toLong())
                 lastActive = System.currentTimeMillis()
                 val left = queuedBytes.addAndGet(-chunk.size)
                 if (left < 32 * 1024) {
@@ -152,7 +176,8 @@ class TcpSession(
             val input = sock.getInputStream()
             val buffer = ByteArray(16 * 1024)
             while (true) {
-                val n = input.read(buffer)
+                val t = tunnel
+                val n = if (t != null) t.input.read(buffer, 0, buffer.size) else input.read(buffer)
                 if (n < 0) break
                 var offset = 0
                 while (offset < n) {
@@ -171,6 +196,7 @@ class TcpSession(
                     }
                     if (!sent) return
                     VpnStats.addDown(routeName, len.toLong())
+                    Bundles.add(routeKey, len.toLong())
                     lastActive = System.currentTimeMillis()
                     offset += len
                 }

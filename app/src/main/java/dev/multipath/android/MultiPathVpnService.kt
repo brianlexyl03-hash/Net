@@ -9,7 +9,9 @@ import android.content.pm.ServiceInfo
 import android.graphics.drawable.Icon
 import android.net.VpnService
 import android.os.Build
+import android.net.wifi.WifiManager
 import android.os.ParcelFileDescriptor
+import android.os.PowerManager
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.IOException
@@ -31,6 +33,8 @@ class MultiPathVpnService : VpnService() {
     private var monitor: NetworkMonitor? = null
     private var selector: RouteSelector? = null
     private var pool: ExecutorService? = null
+    private var wifiLock: WifiManager.WifiLock? = null
+    private var wakeLock: PowerManager.WakeLock? = null
     private val tcp = ConcurrentHashMap<String, TcpSession>()
     private val udp = ConcurrentHashMap<String, UdpSession>()
 
@@ -96,6 +100,8 @@ class MultiPathVpnService : VpnService() {
 
     private fun startEngine(): Boolean {
         ExtraWifi.init(this)
+        Bundles.init(this)
+        ExitServer.refresh(this)
         VpnStats.reset()
         val builder = Builder()
             .setSession("MultiPath")
@@ -104,6 +110,10 @@ class MultiPathVpnService : VpnService() {
             .addRoute("0.0.0.0", 0)
             .addDnsServer("1.1.1.1")
             .addDnsServer("8.8.8.8")
+        if (ExitServer.active != null) {
+            // Pull IPv6 into the tunnel and drop it, so the real address cannot leak around the exit server.
+            try { builder.addAddress("fd00:77::2", 128).addRoute("::", 0) } catch (_: Exception) { }
+        }
         try { builder.addDisallowedApplication(packageName) } catch (_: Exception) { }
         if (Build.VERSION.SDK_INT >= 29) {
             try { builder.setMetered(false) } catch (_: Exception) { }
@@ -125,6 +135,7 @@ class MultiPathVpnService : VpnService() {
         selector = RouteSelector(networkMonitor, prefs)
         pool = Executors.newCachedThreadPool { r -> Thread(r, "multipath-flow").apply { isDaemon = true } }
 
+        if (prefs.getBoolean("keep_awake", true)) acquireLocks()
         running = true
         engineThread = Thread({ packetLoop(descriptor) }, "multipath-tun").also { it.isDaemon = true; it.start() }
         sweeper = Thread({ sweepLoop() }, "multipath-sweeper").also { it.isDaemon = true; it.start() }
@@ -221,6 +232,7 @@ class MultiPathVpnService : VpnService() {
         while (running) {
             try { Thread.sleep(10_000) } catch (_: InterruptedException) { return }
             val now = System.currentTimeMillis()
+            Bundles.flush()
             tcp.values.forEach { if (now - it.lastActive > TcpSession.IDLE_MS) it.shutdown(true) }
             udp.values.forEach { if (now - it.lastActive > it.idleLimitMs) it.close() }
         }
@@ -235,6 +247,8 @@ class MultiPathVpnService : VpnService() {
         udp.values.toList().forEach { it.close() }
         tcp.clear()
         udp.clear()
+        Bundles.flush()
+        releaseLocks()
         monitor?.stop()
         monitor = null
         selector = null
@@ -249,6 +263,25 @@ class MultiPathVpnService : VpnService() {
         if (wasRunning || Build.VERSION.SDK_INT >= 24) {
             try { stopForeground(STOP_FOREGROUND_REMOVE) } catch (_: Exception) { }
         }
+    }
+
+    private fun acquireLocks() {
+        try {
+            val wifi = applicationContext.getSystemService(WIFI_SERVICE) as WifiManager
+            val mode = if (Build.VERSION.SDK_INT >= 29) WifiManager.WIFI_MODE_FULL_LOW_LATENCY else WifiManager.WIFI_MODE_FULL_HIGH_PERF
+            wifiLock = wifi.createWifiLock(mode, "multipath:wifi").apply { setReferenceCounted(false); acquire() }
+            val power = getSystemService(POWER_SERVICE) as PowerManager
+            wakeLock = power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "multipath:engine").apply { setReferenceCounted(false); acquire() }
+        } catch (_: Exception) {
+            // keep-awake is best effort
+        }
+    }
+
+    private fun releaseLocks() {
+        try { wifiLock?.let { if (it.isHeld) it.release() } } catch (_: Exception) { }
+        try { wakeLock?.let { if (it.isHeld) it.release() } } catch (_: Exception) { }
+        wifiLock = null
+        wakeLock = null
     }
 
     override fun onRevoke() {

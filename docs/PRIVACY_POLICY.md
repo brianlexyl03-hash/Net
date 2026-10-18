@@ -12,7 +12,7 @@ The diagnostic report can include the device manufacturer/model, Android version
 
 ## Data collection and sharing
 
-The current project has no app account, advertising SDK, analytics SDK or first-party backend configured. It does not intentionally collect browsing history or account credentials, and it never reads passwords of networks you did not add. A Wi-Fi password you enter in the app is stored encrypted on your device only (Android Keystore) and is never sent anywhere. Network test requests necessarily reach the third-party test endpoint; those services may process technical request data under their own policies.
+The current project has no app account, advertising SDK, analytics SDK or first-party backend configured. It does not intentionally collect browsing history or account credentials, and it never reads passwords of networks you did not add. A Wi-Fi password you enter in the app is stored encrypted on your device only (Android Keystore) and is never sent anywhere. If you set up an exit server, your traffic is sent to the server you entered; MultiPath does not operate any server. Network test requests necessarily reach the third-party test endpoint; those services may process technical request data under their own policies.
 
 ## Permissions
 

@@ -21,7 +21,7 @@ A native Android Kotlin project inspired by the MIT-licensed desktop project [ud
 - Links to Android Wi-Fi and Internet settings; does not read Wi-Fi passwords. Wi-Fi networks you add yourself are stored encrypted on the device with the Android Keystore.
 - Includes unit tests for the flow-selection policy and a GitHub Actions workflow that runs tests and builds a debug APK artifact.
 
-## Traffic balancer (v0.6.0)
+## Traffic balancer (v0.7.0)
 
 Tap **Start balancing** to run an on-device VPN (`MultiPathVpnService`). It reads IPv4 packets from the TUN interface, terminates each TCP connection and UDP flow in a small user-space relay, and re-opens it over a socket bound to a specific Android `Network`. `FlowBalancer` picks the Wi-Fi or mobile-data route for every new connection; if connecting fails it retries on another route. No server or account is needed.
 
@@ -31,6 +31,11 @@ Tap **Start balancing** to run an on-device VPN (`MultiPathVpnService`). It read
 - IPv6 traffic bypasses the tunnel; DNS goes through 1.1.1.1 / 8.8.8.8 over the chosen route.
 - Only one VPN can be active at a time on Android; some OEM battery managers may stop background apps, so exclude MultiPath from battery optimisation.
 - Not Play-Store verified; test on your own devices (see `PLAY_STORE_READINESS.md`).
+
+### Also in 0.7.0
+- **Keep awake:** holds a Wi-Fi lock and wake lock while balancing and offers a battery-optimisation exemption. It cannot turn a radio back on if you or the OEM switch it off.
+- **Data limit per source:** set an allowance for mobile data, a hotspot or any source; new connections stop using it once the limit is reached. It counts MultiPath traffic only.
+- **Exit server:** optional encrypted exit (Shadowsocks, aes-256-gcm) so websites see your own server's location. You need a server; none is provided. While it is on, IPv6 and non-DNS UDP are blocked so nothing leaks around it.
 
 ## Important limitations
 

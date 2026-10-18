@@ -9,11 +9,14 @@ import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.net.Uri
 import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
+import android.provider.Settings
 import android.text.InputType
 import android.view.Gravity
 import android.view.View
@@ -61,6 +64,8 @@ class MainActivity : Activity() {
     private lateinit var legendBox: LinearLayout
     private lateinit var sourcesBox: LinearLayout
     private lateinit var noteLine: TextView
+    private lateinit var exitStatus: TextView
+    private lateinit var exitSwitch: Switch
     private var showDownload = true
     private var testing = false
     private val prefs: SharedPreferences by lazy { getSharedPreferences(RoutePolicy.PREFS, MODE_PRIVATE) }
@@ -79,6 +84,8 @@ class MainActivity : Activity() {
         window.statusBarColor = bg
         window.navigationBarColor = bg
         ExtraWifi.init(this)
+        Bundles.init(this)
+        ExitServer.refresh(this)
         scroller = ScrollView(this).apply {
             setBackgroundColor(bg)
             isFillViewport = true
@@ -108,6 +115,7 @@ class MainActivity : Activity() {
     }
 
     override fun onStop() {
+        Bundles.flush()
         mainHandler.removeCallbacks(ticker)
         monitor.stop()
         super.onStop()
@@ -175,13 +183,58 @@ class MainActivity : Activity() {
         sourcesBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         sources.addView(sourcesBox)
         addSpace(sources, 10)
-        sources.addView(actionButton("Add Wi-Fi", true) { showAddWifi() })
+        sources.addView(actionButton("Add Wi-Fi or hotspot", true) { showAddWifi() })
         addSpace(sources, 8)
         sources.addView(actionButton("Test speed", false) { confirmSpeedTest() })
         addSpace(sources, 8)
         noteLine = text("", 12f, muted)
         sources.addView(noteLine)
         root.addView(sources)
+        addSpace(root, 12)
+
+        val awake = card()
+        val awakeRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        val awakeLabels = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        awakeLabels.addView(text("Keep connections awake", 15f, white, true))
+        awakeLabels.addView(text("Stops Android from putting Wi-Fi and data to sleep", 12f, muted))
+        awakeRow.addView(awakeLabels, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        val awakeSwitch = Switch(this)
+        awakeSwitch.isChecked = prefs.getBoolean("keep_awake", true)
+        awakeSwitch.setOnCheckedChangeListener { _, on -> prefs.edit().putBoolean("keep_awake", on).apply() }
+        awakeRow.addView(awakeSwitch)
+        awake.addView(awakeRow)
+        addSpace(awake, 10)
+        awake.addView(actionButton("Battery settings", false) { askBatteryExemption(force = true) })
+        root.addView(awake)
+        addSpace(root, 12)
+
+        val exit = card()
+        exit.addView(text("Exit server", 11f, muted, true).apply { letterSpacing = 0.1f })
+        addSpace(exit, 6)
+        val exitRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        val exitLabels = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        exitStatus = text("Not set up", 13f, muted)
+        exitLabels.addView(text("Appear in another country", 15f, white, true))
+        exitLabels.addView(exitStatus)
+        exitRow.addView(exitLabels, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        exitSwitch = Switch(this)
+        exitSwitch.setOnCheckedChangeListener { button, on ->
+            if (!button.isPressed) return@setOnCheckedChangeListener
+            if (ExitServer.load(this) == null) {
+                button.isChecked = false
+                showExitDialog()
+            } else {
+                ExitServer.setEnabled(this, on)
+                refreshExit()
+                if (MultiPathVpnService.running) toast("Stop and start again to apply")
+            }
+        }
+        exitRow.addView(exitSwitch)
+        exit.addView(exitRow)
+        addSpace(exit, 10)
+        exit.addView(actionButton("Set up server", false) { showExitDialog() })
+        root.addView(exit)
+        refreshExit()
         addSpace(root, 16)
         root.addView(text("Version ${BuildConfigVersion.NAME}", 10f, muted))
     }
@@ -253,17 +306,19 @@ class MainActivity : Activity() {
         val shownExtra = HashSet<String>()
         for (link in links) {
             val name = RoutePolicy.nameOf(link, links)
+            val key = RoutePolicy.keyOf(link)
+            val full = Bundles.exhausted(key)
             val speed = link.measuredMbps?.let { "  ·  ${formatMbps(it.toFloat())}" } ?: ""
+            val bundle = Bundles.describe(key).let { if (it.isEmpty()) "" else "  ·  $it" }
             if (link.extra) {
                 shownExtra.add(link.label ?: "")
-                val state = if (link.validated) "Connected" else "No internet"
-                sourcesBox.addView(sourceRow(name, state + speed, true, link.validated, { on ->
+                val state = if (full) "Limit reached" else if (link.validated) "Connected" else "No internet"
+                sourcesBox.addView(sourceRow(name, state + speed + bundle, true, link.validated && !full, key, { on ->
                     if (!on) ExtraWifi.disconnect(this, link.label ?: "")
                 }, { removeWifi(link.label ?: "") }))
             } else {
-                val key = RoutePolicy.keyOf(link)
-                val state = if (link.validated) "Ready" else "No internet"
-                sourcesBox.addView(sourceRow(name, state + speed, key !in disabled, link.validated, { on ->
+                val state = if (full) "Limit reached" else if (link.validated) "Ready" else "No internet"
+                sourcesBox.addView(sourceRow(name, state + speed + bundle, key !in disabled, link.validated && !full, key, { on ->
                     RoutePolicy.setEnabled(prefs, key, on)
                     refreshHero()
                 }, null))
@@ -278,7 +333,7 @@ class MainActivity : Activity() {
                 live?.state == ExtraWifi.State.FAILED -> live?.message ?: "Not connected"
                 else -> "Off"
             }
-            sourcesBox.addView(sourceRow("Wi-Fi: ${saved.ssid}", detail, busy, true, { on ->
+            sourcesBox.addView(sourceRow("Wi-Fi: ${saved.ssid}", detail, busy, true, "wifi:" + saved.ssid, { on ->
                 if (on) connectExtra(saved.ssid) else ExtraWifi.disconnect(this, saved.ssid)
             }, { removeWifi(saved.ssid) }))
         }
@@ -288,7 +343,7 @@ class MainActivity : Activity() {
     }
 
     private fun sourceRow(
-        name: String, detail: String, checked: Boolean, healthy: Boolean,
+        name: String, detail: String, checked: Boolean, healthy: Boolean, bundleKey: String,
         onToggle: (Boolean) -> Unit, onRemove: (() -> Unit)?,
     ): View {
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
@@ -296,19 +351,39 @@ class MainActivity : Activity() {
         val labels = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         labels.addView(text(name, 15f, white, true))
         labels.addView(text(detail, 12f, if (healthy) muted else amber))
+        val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        actions.addView(text("Data limit", 12f, accent, true).apply {
+            setPadding(0, dp(6), dp(16), dp(2))
+            isClickable = true
+            setOnClickListener { showBundleDialog(name, bundleKey) }
+        })
         if (onRemove != null) {
-            labels.addView(text("Remove", 12f, red, true).apply {
+            actions.addView(text("Remove", 12f, red, true).apply {
                 setPadding(0, dp(6), dp(12), dp(2))
                 isClickable = true
                 setOnClickListener { onRemove() }
             })
         }
+        labels.addView(actions)
         row.addView(labels, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         val toggle = Switch(this)
         toggle.isChecked = checked
         toggle.setOnCheckedChangeListener { _, on -> onToggle(on) }
         row.addView(toggle)
         return row
+    }
+
+    private fun refreshExit() {
+        if (!::exitStatus.isInitialized) return
+        val config = ExitServer.load(this)
+        val on = ExitServer.enabled(this) && config != null
+        exitSwitch.isChecked = on
+        exitStatus.text = when {
+            config == null -> "Not set up"
+            on -> "On  ·  ${config.host}"
+            else -> "Off  ·  ${config.host}"
+        }
+        exitStatus.setTextColor(if (on) accent else muted)
     }
 
     // ---- actions ----------------------------------------------------------------
@@ -348,6 +423,147 @@ class MainActivity : Activity() {
             toast("Could not start")
         }
         mainHandler.postDelayed({ refreshHero() }, 800)
+        askBatteryExemption(force = false)
+    }
+
+    private fun askBatteryExemption(force: Boolean) {
+        val power = getSystemService(POWER_SERVICE) as PowerManager
+        if (power.isIgnoringBatteryOptimizations(packageName)) {
+            if (force) toast("Already allowed")
+            return
+        }
+        if (!force && prefs.getBoolean("asked_battery", false)) return
+        prefs.edit().putBoolean("asked_battery", true).apply()
+        AlertDialog.Builder(this)
+            .setTitle("Keep MultiPath running")
+            .setMessage("Allow it to ignore battery limits so Android does not stop it.")
+            .setNegativeButton("Not now", null)
+            .setPositiveButton("Allow") { _, _ ->
+                try {
+                    startActivity(
+                        Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName"))
+                    )
+                } catch (_: Exception) {
+                    try { startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) } catch (_: Exception) { toast("Open battery settings manually") }
+                }
+            }
+            .show()
+    }
+
+    private fun showBundleDialog(name: String, key: String) {
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(22), dp(10), dp(22), 0)
+        }
+        val input = EditText(this).apply {
+            hint = "Amount"
+            inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
+            setSingleLine(true)
+            val current = Bundles.limitBytes(key)
+            if (current > 0L) setText(String.format(Locale.US, "%.0f", current / 1_048_576.0))
+        }
+        val unit = Spinner(this).apply {
+            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, listOf("MB", "GB"))
+        }
+        box.addView(input)
+        box.addView(unit)
+        box.addView(text(
+            if (Bundles.limitBytes(key) > 0L) "Used so far: ${Bundles.format(Bundles.usedBytes(key))}. Counts MultiPath traffic only." else "New connections stop using this source when the limit is reached. Counts MultiPath traffic only.",
+            12f, muted,
+        ).apply { setPadding(0, dp(10), 0, 0) })
+        AlertDialog.Builder(this)
+            .setTitle("$name data limit")
+            .setView(box)
+            .setNegativeButton("Cancel", null)
+            .setNeutralButton("No limit") { _, _ -> Bundles.setLimit(key, 0L); refreshSources(); refreshHero() }
+            .setPositiveButton("Set") { _, _ ->
+                val amount = input.text.toString().toDoubleOrNull()
+                if (amount == null || amount <= 0.0) {
+                    toast("Enter an amount")
+                } else {
+                    val bytes = amount * (if (unit.selectedItemPosition == 1) 1_073_741_824.0 else 1_048_576.0)
+                    Bundles.setLimit(key, bytes.toLong())
+                }
+                refreshSources()
+                refreshHero()
+            }
+            .show()
+    }
+
+    private fun showExitDialog() {
+        val existing = ExitServer.load(this)
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(22), dp(10), dp(22), 0)
+        }
+        val host = EditText(this).apply {
+            hint = "Server address"
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS or InputType.TYPE_TEXT_VARIATION_URI
+            setSingleLine(true)
+            setText(existing?.host ?: "")
+        }
+        val port = EditText(this).apply {
+            hint = "Port"
+            inputType = InputType.TYPE_CLASS_NUMBER
+            setSingleLine(true)
+            setText((existing?.port ?: 8388).toString())
+        }
+        val pass = EditText(this).apply {
+            hint = "Password"
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+            setSingleLine(true)
+            setText(existing?.password ?: "")
+        }
+        val result = text("", 12f, muted).apply { setPadding(0, dp(10), 0, 0) }
+        box.addView(host)
+        box.addView(port)
+        box.addView(pass)
+        box.addView(result)
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("Exit server")
+            .setView(box)
+            .setNegativeButton("Cancel", null)
+            .setNeutralButton("Test", null)
+            .setPositiveButton("Save", null)
+            .create()
+        dialog.show()
+        fun read(): ExitServer.Config? {
+            val h = host.text.toString().trim()
+            val p = port.text.toString().trim().toIntOrNull()
+            val w = pass.text.toString()
+            return if (h.isEmpty() || p == null || p !in 1..65535 || w.isEmpty()) null else ExitServer.Config(h, p, w)
+        }
+        dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
+            val config = read()
+            val network = RoutePolicy.eligible(monitor.snapshots(), prefs).firstOrNull { it.validated }?.network
+            if (config == null) {
+                result.text = "Fill in all fields"
+            } else if (network == null) {
+                result.text = "No connection to test with"
+            } else {
+                result.text = "Testing"
+                worker.execute {
+                    val message = try {
+                        "Works. Websites see: " + Shadowsocks.lookupExitAddress(network, config)
+                    } catch (error: Exception) {
+                        "Failed: " + (error.message ?: error.javaClass.simpleName).take(70)
+                    }
+                    mainHandler.post { result.text = message }
+                }
+            }
+        }
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+            val config = read()
+            if (config == null) {
+                result.text = "Fill in all fields"
+            } else if (!ExitServer.save(this, config.host, config.port, config.password)) {
+                result.text = "Could not save securely"
+            } else {
+                refreshExit()
+                if (MultiPathVpnService.running) toast("Stop and start again to apply")
+                dialog.dismiss()
+            }
+        }
     }
 
     private fun showAddWifi() {

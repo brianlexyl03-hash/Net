@@ -10,7 +10,7 @@ fun interface PacketSink {
     fun write(packet: ByteArray)
 }
 
-class Route(val network: Network, val id: String, val label: String)
+class Route(val network: Network, val id: String, val label: String, val key: String = "")
 
 interface RouteProvider {
     fun acquire(exclude: Set<String>): Route?
@@ -77,7 +77,7 @@ object RoutePolicy {
     }
 
     fun eligible(routes: List<LinkSnapshot>, disabled: Set<String>): List<LinkSnapshot> =
-        routes.filter { keyOf(it) !in disabled }.distinctBy { it.id }
+        routes.filter { keyOf(it) !in disabled && !Bundles.exhausted(keyOf(it)) }.distinctBy { it.id }
 
     fun eligible(routes: List<LinkSnapshot>, prefs: SharedPreferences): List<LinkSnapshot> =
         eligible(routes, disabled(prefs))
@@ -101,7 +101,7 @@ class RouteSelector(
         active.getOrPut(link.id) { AtomicInteger() }.incrementAndGet()
         val label = RoutePolicy.nameOf(link, all)
         VpnStats.flowsByRoute.getOrPut(label) { AtomicLong() }.incrementAndGet()
-        return Route(link.network, link.id, label)
+        return Route(link.network, link.id, label, RoutePolicy.keyOf(link))
     }
 
     @Synchronized
