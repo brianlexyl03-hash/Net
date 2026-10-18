@@ -145,7 +145,7 @@ class MainActivity : Activity() {
             setPadding(dp(10), 0, 0, 0)
         }
         nameBlock.addView(text("MultiPath", 17f, white, true))
-        nameBlock.addView(text("NETWORK INTELLIGENCE", 9f, muted, true).apply { spacing = 1.05f })
+        nameBlock.addView(text("NETWORK INTELLIGENCE", 9f, muted, true).apply { letterSpacing = 1.05f })
         row.addView(nameBlock, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         val badge = text(if (running) "● TESTING" else "● READY", 10f, if (running) amber else accent, true).apply {
             setPadding(dp(10), dp(8), dp(10), dp(8))
@@ -564,7 +564,7 @@ class MainActivity : Activity() {
         gravity = Gravity.CENTER_VERTICAL
         addView(text(value, 21f, valueColor, true))
         addSpace(this, 4)
-        addView(text(label, 8.5f, muted, true).apply { spacing = 0.45f })
+        addView(text(label, 8.5f, muted, true).apply { letterSpacing = 0.45f })
     }
 
     private fun smallStat(label: String, value: String, valueColor: Int): LinearLayout = LinearLayout(this).apply {
@@ -616,7 +616,7 @@ class MainActivity : Activity() {
     }
 
     private fun addText(parent: LinearLayout, value: String, size: Float, color: Int, bold: Boolean = false, spacing: Float = 0f) {
-        parent.addView(text(value, size, color, bold).apply { spacing = spacing / 16f })
+        parent.addView(text(value, size, color, bold).apply { letterSpacing = spacing / 16f })
     }
 
     private fun addSpace(parent: LinearLayout, size: Int, horizontal: Boolean = false) {
