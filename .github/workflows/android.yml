@@ -1,4 +1,4 @@
-name: Android CI and release artifacts
+name: Android CI and downloadable APK
 
 on:
   push:
@@ -37,6 +37,34 @@ jobs:
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
+
+
+  publish-apk:
+    name: Publish directly downloadable APK
+    needs: verify
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Build installable APK
+        run: gradle assembleDebug --stacktrace
+      - name: Publish APK on GitHub Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: android-${{ github.sha }}
+          name: MultiPath Android build ${{ github.sha }}
+          body: "Installable debug APK for device testing. Not Play Store production-signed."
+          files: app/build/outputs/apk/debug/app-debug.apk
+          fail_on_unmatched_files: true
 
   release-bundle:
     name: Build Play Store AAB (unsigned)
