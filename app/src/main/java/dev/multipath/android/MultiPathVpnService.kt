@@ -95,6 +95,7 @@ class MultiPathVpnService : VpnService() {
     }
 
     private fun startEngine(): Boolean {
+        ExtraWifi.init(this)
         VpnStats.reset()
         val builder = Builder()
             .setSession("MultiPath")

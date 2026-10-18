@@ -18,10 +18,10 @@ A native Android Kotlin project inspired by the MIT-licensed desktop project [ud
 - Provides a concurrent multi-route benchmark capped at 2 MB per route (maximum 20 MB for ten exposed routes). It measures total bytes delivered during the same wall-clock interval, alongside individual route results.
 - Shows the fastest measured route, the sum of separately measured route rates, and the latest concurrent benchmark as clearly distinct metrics.
 - Can clear measurements and share a diagnostic report. The report includes device/Android version, route status and test results, but not Wi-Fi passwords, credentials or browsing history.
-- Links to Android Wi-Fi and Internet settings; does not read or store Wi-Fi passwords.
+- Links to Android Wi-Fi and Internet settings; does not read Wi-Fi passwords. Wi-Fi networks you add yourself are stored encrypted on the device with the Android Keystore.
 - Includes unit tests for the flow-selection policy and a GitHub Actions workflow that runs tests and builds a debug APK artifact.
 
-## Traffic balancer (v0.5.0)
+## Traffic balancer (v0.6.0)
 
 Tap **Start balancing** to run an on-device VPN (`MultiPathVpnService`). It reads IPv4 packets from the TUN interface, terminates each TCP connection and UDP flow in a small user-space relay, and re-opens it over a socket bound to a specific Android `Network`. `FlowBalancer` picks the Wi-Fi or mobile-data route for every new connection; if connecting fails it retries on another route. No server or account is needed.
 

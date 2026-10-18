@@ -20,6 +20,8 @@ class UdpSession(
 ) {
     private var socket: DatagramSocket? = null
     private var route: Route? = null
+    @Volatile
+    private var routeName = ""
     private var closed = false
 
     @Volatile
@@ -42,6 +44,7 @@ class UdpSession(
                 s.connect(InetSocketAddress(PacketUtil.toAddress(serverIp), serverPort))
                 socket = s
                 route = candidate
+                routeName = candidate.label
                 VpnStats.udpOpened.incrementAndGet()
                 pool.execute { receiveLoop(s) }
                 return s
@@ -62,7 +65,7 @@ class UdpSession(
         }
         try {
             s.send(DatagramPacket(buf.copyOfRange(offset, offset + length), length))
-            VpnStats.bytesUp.addAndGet(length.toLong())
+            VpnStats.addUp(routeName, length.toLong())
         } catch (_: IOException) {
             close()
         }
@@ -75,7 +78,7 @@ class UdpSession(
                 val packet = DatagramPacket(buffer, buffer.size)
                 s.receive(packet)
                 lastActive = System.currentTimeMillis()
-                VpnStats.bytesDown.addAndGet(packet.length.toLong())
+                VpnStats.addDown(routeName, packet.length.toLong())
                 sink.write(PacketUtil.udpPacket(serverIp, serverPort, clientIp, clientPort, buffer, 0, packet.length))
             }
         } catch (_: IOException) {

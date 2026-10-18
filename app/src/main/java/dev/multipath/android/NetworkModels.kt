@@ -12,6 +12,8 @@ data class LinkSnapshot(
     val latencyMs: Long? = null,
     val measuredMbps: Double? = null,
     val lastError: String? = null,
+    val label: String? = null,
+    val extra: Boolean = false,
 ) {
     val id: String get() = network.toString()
 }

@@ -1,27 +1,30 @@
 package dev.multipath.android
 
+import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
-import android.content.ActivityNotFoundException
 import android.content.Intent
+import android.content.SharedPreferences
+import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
-import android.Manifest
-import android.content.pm.PackageManager
-import android.net.Network
 import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.provider.Settings
+import android.text.InputType
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.widget.ArrayAdapter
+import android.widget.EditText
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
+import android.widget.Spinner
+import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
 import java.util.Locale
@@ -38,25 +41,36 @@ class MainActivity : Activity() {
     private val amber = Color.rgb(255, 212, 121)
     private val blue = Color.rgb(123, 201, 255)
     private val red = Color.rgb(255, 143, 143)
+    private val palette = intArrayOf(
+        Color.rgb(123, 201, 255), Color.rgb(255, 212, 121), Color.rgb(207, 160, 255),
+        Color.rgb(255, 143, 143), Color.rgb(255, 170, 110),
+    )
 
     private val worker = Executors.newSingleThreadExecutor()
     private val mainHandler = Handler(Looper.getMainLooper())
     private lateinit var monitor: NetworkMonitor
     private lateinit var scroller: ScrollView
-    private lateinit var content: LinearLayout
-    private var status = "Ready. Scan to inspect routes available to Android."
-    private var running = false
-    private var lastParallelAggregateMbps: Double? = null
-    private var lastParallelRouteCount = 0
-    private var lastParallelDurationSeconds: Double? = null
-    private val prefs by lazy { getSharedPreferences("route_slots", MODE_PRIVATE) }
-    private var simSlots = 2
-    private var wifiSlots = 2
-    private var hotspotSlots = 2
+    private lateinit var heroTitle: TextView
+    private lateinit var heroSub: TextView
+    private lateinit var heroButton: TextView
+    private lateinit var pill: TextView
+    private lateinit var graph: LiveGraphView
+    private lateinit var totalValue: TextView
+    private lateinit var tabDown: TextView
+    private lateinit var tabUp: TextView
+    private lateinit var legendBox: LinearLayout
+    private lateinit var sourcesBox: LinearLayout
+    private lateinit var noteLine: TextView
+    private var showDownload = true
+    private var testing = false
+    private val prefs: SharedPreferences by lazy { getSharedPreferences(RoutePolicy.PREFS, MODE_PRIVATE) }
+
     private val ticker = object : Runnable {
         override fun run() {
-            if (MultiPathVpnService.running) render()
-            mainHandler.postDelayed(this, 2_000)
+            TrafficHistory.sample()
+            refreshHero()
+            refreshGraph()
+            mainHandler.postDelayed(this, 1_000)
         }
     }
 
@@ -64,33 +78,33 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         window.statusBarColor = bg
         window.navigationBarColor = bg
-        @Suppress("DEPRECATION")
-        window.decorView.systemUiVisibility = 0
-
+        ExtraWifi.init(this)
         scroller = ScrollView(this).apply {
             setBackgroundColor(bg)
             isFillViewport = true
             clipToPadding = false
             setPadding(0, dp(8), 0, dp(22))
         }
-        content = LinearLayout(this).apply {
+        val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(18), dp(10), dp(18), dp(12))
         }
-        scroller.addView(content)
+        scroller.addView(root)
         setContentView(scroller)
-
-        simSlots = prefs.getInt("sim_slots", 2).coerceIn(0, 2)
-        wifiSlots = prefs.getInt("wifi_slots", 2).coerceIn(0, 4)
-        hotspotSlots = prefs.getInt("hotspot_slots", 2).coerceIn(0, 4)
-        monitor = NetworkMonitor(this) { render() }
-        render()
+        monitor = NetworkMonitor(this, keepCellularAlive = true) {
+            refreshSources()
+            refreshHero()
+        }
+        buildScreen(root)
+        refreshSources()
+        refreshHero()
+        refreshGraph()
     }
 
     override fun onStart() {
         super.onStart()
         monitor.start()
-        mainHandler.postDelayed(ticker, 2_000)
+        mainHandler.post(ticker)
     }
 
     override fun onStop() {
@@ -99,22 +113,218 @@ class MainActivity : Activity() {
         super.onStop()
     }
 
+    override fun onDestroy() {
+        worker.shutdownNow()
+        super.onDestroy()
+    }
+
+    // ---- layout ------------------------------------------------------------
+
+    private fun buildScreen(root: LinearLayout) {
+        val header = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        header.addView(ImageView(this).apply {
+            setImageResource(R.drawable.ic_brand_mark)
+            layoutParams = LinearLayout.LayoutParams(dp(34), dp(34))
+        })
+        addSpace(header, 10, horizontal = true)
+        header.addView(text("MultiPath", 20f, white, true), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        pill = text("Off", 12f, muted, true).apply {
+            setPadding(dp(12), dp(6), dp(12), dp(6))
+            background = shape(surface2, 14, line)
+        }
+        header.addView(pill)
+        root.addView(header)
+        addSpace(root, 16)
+
+        val hero = card()
+        heroTitle = text("Off", 30f, white, true)
+        heroSub = text("", 14f, muted)
+        hero.addView(heroTitle)
+        addSpace(hero, 4)
+        hero.addView(heroSub)
+        addSpace(hero, 16)
+        heroButton = actionButton("Start", true) { toggleVpn() }
+        hero.addView(heroButton)
+        root.addView(hero)
+        addSpace(root, 12)
+
+        val traffic = card()
+        traffic.addView(text("Live traffic", 11f, muted, true).apply { letterSpacing = 0.1f })
+        addSpace(traffic, 8)
+        val tabs = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        tabDown = tabButton("Download") { showDownload = true; refreshGraph() }
+        tabUp = tabButton("Upload") { showDownload = false; refreshGraph() }
+        tabs.addView(tabDown, weightParams())
+        addSpace(tabs, 8, horizontal = true)
+        tabs.addView(tabUp, weightParams())
+        traffic.addView(tabs)
+        addSpace(traffic, 12)
+        totalValue = text("0.0 Mbps", 28f, accent, true)
+        traffic.addView(totalValue)
+        graph = LiveGraphView(this)
+        traffic.addView(graph, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(170)))
+        addSpace(traffic, 6)
+        legendBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        traffic.addView(legendBox)
+        root.addView(traffic)
+        addSpace(root, 12)
+
+        val sources = card()
+        sources.addView(text("Sources", 11f, muted, true).apply { letterSpacing = 0.1f })
+        addSpace(sources, 6)
+        sourcesBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        sources.addView(sourcesBox)
+        addSpace(sources, 10)
+        sources.addView(actionButton("Add Wi-Fi", true) { showAddWifi() })
+        addSpace(sources, 8)
+        sources.addView(actionButton("Test speed", false) { confirmSpeedTest() })
+        addSpace(sources, 8)
+        noteLine = text("", 12f, muted)
+        sources.addView(noteLine)
+        root.addView(sources)
+        addSpace(root, 16)
+        root.addView(text("Version ${BuildConfigVersion.NAME}", 10f, muted))
+    }
+
+    private fun tabButton(label: String, action: () -> Unit): TextView = TextView(this).apply {
+        text = label
+        textSize = 13f
+        typeface = Typeface.DEFAULT_BOLD
+        gravity = Gravity.CENTER
+        setPadding(dp(10), dp(10), dp(10), dp(10))
+        isClickable = true
+        setOnClickListener { action() }
+    }
+
+    // ---- live updates --------------------------------------------------------
+
+    private fun refreshHero() {
+        if (!::heroTitle.isInitialized) return
+        val on = MultiPathVpnService.running
+        val active = RoutePolicy.eligible(monitor.snapshots(), prefs).count { it.validated }
+        heroTitle.text = if (on) "On" else "Off"
+        heroTitle.setTextColor(if (on) accent else white)
+        heroSub.text = if (on) "$active source${if (active == 1) "" else "s"} in use" else "Combine your connections"
+        heroButton.text = if (on) "Stop" else "Start"
+        heroButton.setTextColor(if (on) white else bg)
+        heroButton.background = if (on) shape(surface2, 14, line) else shape(accent, 14, accent)
+        pill.text = if (on) "On" else "Off"
+        pill.setTextColor(if (on) bg else muted)
+        pill.background = if (on) shape(accent, 14, accent) else shape(surface2, 14, line)
+    }
+
+    private fun refreshGraph() {
+        if (!::graph.isInitialized) return
+        styleTab(tabDown, showDownload)
+        styleTab(tabUp, !showDownload)
+        val names = TrafficHistory.names()
+        val items = ArrayList<LiveGraphView.Line>()
+        names.forEachIndexed { index, name ->
+            items.add(LiveGraphView.Line(palette[index % palette.size], TrafficHistory.values(name, showDownload), false))
+        }
+        val total = TrafficHistory.totalValues(showDownload)
+        items.add(LiveGraphView.Line(accent, total, true))
+        graph.setLines(items)
+        totalValue.text = formatMbps(total.lastOrNull() ?: 0f)
+        legendBox.removeAllViews()
+        names.forEachIndexed { index, name ->
+            val values = TrafficHistory.values(name, showDownload)
+            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+            row.setPadding(0, dp(4), 0, dp(4))
+            row.addView(View(this).apply { background = shape(palette[index % palette.size], 4) }, LinearLayout.LayoutParams(dp(10), dp(10)))
+            addSpace(row, 8, horizontal = true)
+            row.addView(text(name, 13f, white), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            row.addView(text(formatMbps(values.lastOrNull() ?: 0f), 13f, muted, true))
+            legendBox.addView(row)
+        }
+    }
+
+    private fun styleTab(tab: TextView, selected: Boolean) {
+        tab.setTextColor(if (selected) bg else white)
+        tab.background = if (selected) shape(accent, 12, accent) else shape(surface2, 12, line)
+    }
+
+    private fun refreshSources() {
+        if (!::sourcesBox.isInitialized) return
+        sourcesBox.removeAllViews()
+        val links = monitor.snapshots()
+        val disabled = RoutePolicy.disabled(prefs)
+        val savedExtras = ExtraWifi.load(this)
+        val shownExtra = HashSet<String>()
+        for (link in links) {
+            val name = RoutePolicy.nameOf(link, links)
+            val speed = link.measuredMbps?.let { "  ·  ${formatMbps(it.toFloat())}" } ?: ""
+            if (link.extra) {
+                shownExtra.add(link.label ?: "")
+                val state = if (link.validated) "Connected" else "No internet"
+                sourcesBox.addView(sourceRow(name, state + speed, true, link.validated, { on ->
+                    if (!on) ExtraWifi.disconnect(this, link.label ?: "")
+                }, { removeWifi(link.label ?: "") }))
+            } else {
+                val key = RoutePolicy.keyOf(link)
+                val state = if (link.validated) "Ready" else "No internet"
+                sourcesBox.addView(sourceRow(name, state + speed, key !in disabled, link.validated, { on ->
+                    RoutePolicy.setEnabled(prefs, key, on)
+                    refreshHero()
+                }, null))
+            }
+        }
+        for (saved in savedExtras) {
+            if (saved.ssid in shownExtra) continue
+            val live = ExtraWifi.stateOf(saved.ssid)
+            val busy = live?.state == ExtraWifi.State.CONNECTING
+            val detail = when {
+                busy -> live?.message?.ifBlank { "Connecting" } ?: "Connecting"
+                live?.state == ExtraWifi.State.FAILED -> live?.message ?: "Not connected"
+                else -> "Off"
+            }
+            sourcesBox.addView(sourceRow("Wi-Fi: ${saved.ssid}", detail, busy, true, { on ->
+                if (on) connectExtra(saved.ssid) else ExtraWifi.disconnect(this, saved.ssid)
+            }, { removeWifi(saved.ssid) }))
+        }
+        if (sourcesBox.childCount == 0) {
+            sourcesBox.addView(text("No sources found. Turn on Wi-Fi or mobile data.", 13f, muted))
+        }
+    }
+
+    private fun sourceRow(
+        name: String, detail: String, checked: Boolean, healthy: Boolean,
+        onToggle: (Boolean) -> Unit, onRemove: (() -> Unit)?,
+    ): View {
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        row.setPadding(0, dp(8), 0, dp(8))
+        val labels = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        labels.addView(text(name, 15f, white, true))
+        labels.addView(text(detail, 12f, if (healthy) muted else amber))
+        if (onRemove != null) {
+            labels.addView(text("Remove", 12f, red, true).apply {
+                setPadding(0, dp(6), dp(12), dp(2))
+                isClickable = true
+                setOnClickListener { onRemove() }
+            })
+        }
+        row.addView(labels, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        val toggle = Switch(this)
+        toggle.isChecked = checked
+        toggle.setOnCheckedChangeListener { _, on -> onToggle(on) }
+        row.addView(toggle)
+        return row
+    }
+
+    // ---- actions ----------------------------------------------------------------
+
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == REQUEST_VPN) {
-            if (resultCode == RESULT_OK) launchVpn() else {
-                status = "VPN permission was not granted, so traffic balancing stays off."
-                render()
-            }
+            if (resultCode == RESULT_OK) launchVpn() else toast("Permission needed to start")
         }
     }
 
     private fun toggleVpn() {
         if (MultiPathVpnService.running) {
             startService(Intent(this, MultiPathVpnService::class.java).setAction(MultiPathVpnService.ACTION_STOP))
-            status = "Traffic balancing stopped."
-            mainHandler.postDelayed({ render() }, 400)
+            mainHandler.postDelayed({ refreshHero() }, 400)
             return
         }
         if (Build.VERSION.SDK_INT >= 33 &&
@@ -132,561 +342,138 @@ class MainActivity : Activity() {
     }
 
     private fun launchVpn() {
-        val intent = Intent(this, MultiPathVpnService::class.java).setAction(MultiPathVpnService.ACTION_START)
         try {
-            startForegroundService(intent)
-            status = "Traffic balancing starting…"
+            startForegroundService(Intent(this, MultiPathVpnService::class.java).setAction(MultiPathVpnService.ACTION_START))
         } catch (error: Exception) {
-            status = "Could not start the VPN engine: ${error.message ?: "unknown error"}"
+            toast("Could not start")
         }
-        mainHandler.postDelayed({ render() }, 800)
+        mainHandler.postDelayed({ refreshHero() }, 800)
     }
 
-    private fun buildVpnCard(routes: List<LinkSnapshot>): View {
-        val on = MultiPathVpnService.running
-        val card = card(fill = surface2, outline = if (on) accent else line)
-        addText(card, "TRAFFIC BALANCER", 11f, if (on) accent else muted, true, 1.3f)
-        addSpace(card, 8)
-        addText(
-            card,
-            if (on) "ON. New connections from your apps are being shared across Wi-Fi and mobile data."
-            else "Shares your apps' connections across every Wi-Fi and mobile-data route Android exposes. Each new connection goes to the route with the most spare capacity.",
-            13f, white,
-        )
-        addSpace(card, 12)
-        card.addView(actionButton(if (on) "Stop balancing" else "Start balancing", !on) { toggleVpn() })
-        if (on) {
-            addSpace(card, 12)
-            val perRoute = VpnStats.flowsByRoute.entries.sortedBy { it.key }
-            addText(card, "Active connections: ${VpnStats.activeTcp.get()}  ·  TCP opened: ${VpnStats.tcpOpened.get()}  ·  UDP flows: ${VpnStats.udpOpened.get()}", 12f, blue)
-            addSpace(card, 4)
-            addText(card, "Sent ${formatBytes(VpnStats.bytesUp.get())}  ·  Received ${formatBytes(VpnStats.bytesDown.get())}", 12f, muted)
-            if (perRoute.isNotEmpty()) {
-                addSpace(card, 6)
-                perRoute.forEach { addText(card, "${it.key}: ${it.value.get()} connection(s)", 12f, accent) }
+    private fun showAddWifi() {
+        if (Build.VERSION.SDK_INT < 29) {
+            toast("Needs Android 10 or newer")
+            return
+        }
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(22), dp(10), dp(22), 0)
+        }
+        val nameInput = EditText(this).apply {
+            hint = "Wi-Fi name"
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+            setSingleLine(true)
+        }
+        val passInput = EditText(this).apply {
+            hint = "Password"
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+            setSingleLine(true)
+        }
+        val types = listOf("WPA2", "WPA3", "Open")
+        val typeSpinner = Spinner(this).apply {
+            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, types)
+        }
+        val support = when (ExtraWifi.support(this)) {
+            ExtraWifi.Support.YES -> "This phone can stay on two Wi-Fi networks at once."
+            ExtraWifi.Support.NO -> "This phone can only use one Wi-Fi at a time. Adding one will pause the current Wi-Fi."
+            ExtraWifi.Support.UNKNOWN -> "Some phones pause the current Wi-Fi when another is added."
+            ExtraWifi.Support.TOO_OLD -> "Needs Android 10 or newer."
+        }
+        box.addView(nameInput)
+        box.addView(passInput)
+        box.addView(typeSpinner)
+        box.addView(text(support, 12f, muted).apply { setPadding(0, dp(10), 0, 0) })
+        AlertDialog.Builder(this)
+            .setTitle("Add Wi-Fi")
+            .setView(box)
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Add") { _, _ ->
+                val ssid = nameInput.text.toString().trim()
+                val password = passInput.text.toString()
+                val security = types[typeSpinner.selectedItemPosition].lowercase(Locale.US)
+                when {
+                    ssid.isEmpty() -> toast("Enter the Wi-Fi name")
+                    security != "open" && password.length < 8 -> toast("Password needs 8 or more characters")
+                    !ExtraWifi.add(this, ssid, security, password) -> toast("Could not save securely")
+                    else -> connectExtra(ssid)
+                }
+                refreshSources()
             }
-        } else if (routes.count { it.validated } < 2) {
-            addSpace(card, 8)
-            addText(card, "Only ${routes.count { it.validated }} usable route right now. Turn on both Wi-Fi and mobile data to share load.", 11f, amber)
+            .show()
+    }
+
+    private fun connectExtra(ssid: String) {
+        val hasMainWifi = monitor.snapshots().any { it.transport == "Wi-Fi" && !it.extra }
+        val support = ExtraWifi.support(this)
+        if (hasMainWifi && support != ExtraWifi.Support.YES) {
+            AlertDialog.Builder(this)
+                .setTitle("Use $ssid?")
+                .setMessage("Your phone may pause the current Wi-Fi while this one connects. Mobile data stays on.")
+                .setNegativeButton("Cancel") { _, _ -> refreshSources() }
+                .setPositiveButton("Continue") { _, _ -> ExtraWifi.connect(this, ssid) }
+                .show()
+        } else {
+            ExtraWifi.connect(this, ssid)
         }
-        addSpace(card, 8)
-        addText(card, "Each single connection still uses one route, so a single download cannot exceed that route. Many parallel connections (browsing, apps, torrents, multi-part downloads) are what get faster. IPv6 traffic and other VPN apps are not balanced. Only one VPN can be active on Android at a time.", 11f, muted)
-        return card
     }
 
-    private fun formatBytes(bytes: Long): String = when {
-        bytes >= 1_000_000_000L -> String.format(Locale.US, "%.2f GB", bytes / 1e9)
-        bytes >= 1_000_000L -> String.format(Locale.US, "%.1f MB", bytes / 1e6)
-        bytes >= 1_000L -> String.format(Locale.US, "%.0f KB", bytes / 1e3)
-        else -> "$bytes B"
+    private fun removeWifi(ssid: String) {
+        AlertDialog.Builder(this)
+            .setTitle("Remove $ssid?")
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Remove") { _, _ -> ExtraWifi.remove(this, ssid); refreshSources() }
+            .show()
     }
 
-    override fun onDestroy() {
-        worker.shutdownNow()
-        super.onDestroy()
+    private fun confirmSpeedTest() {
+        if (testing) return
+        val targets = RoutePolicy.eligible(monitor.snapshots(), prefs).filter { it.validated }
+        if (targets.isEmpty()) {
+            toast("No source is ready")
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Test speed")
+            .setMessage("Uses up to 4 MB per source.")
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Start") { _, _ -> runSpeedTest(targets) }
+            .show()
     }
+
+    private fun runSpeedTest(targets: List<LinkSnapshot>) {
+        testing = true
+        noteLine.text = "Testing"
+        worker.execute {
+            var failed = 0
+            for (link in targets) {
+                try {
+                    monitor.recordSpeed(link.network, NetworkTester.downloadMbps(link.network))
+                } catch (_: Exception) {
+                    failed++
+                }
+            }
+            mainHandler.post {
+                testing = false
+                noteLine.text = if (failed == 0) "Done" else "$failed source${if (failed == 1) "" else "s"} failed"
+                refreshSources()
+            }
+        }
+    }
+
+    private fun toast(message: String) = Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
+
+    private fun formatMbps(value: Float): String = String.format(Locale.US, "%.1f Mbps", value)
 
     companion object {
         private const val REQUEST_VPN = 41
         private const val REQUEST_NOTIFICATIONS = 42
     }
 
-    private fun render() {
-        if (!::content.isInitialized || isFinishing) return
-        val previousScroll = scroller.scrollY
-        content.removeAllViews()
-        val routes = monitor.snapshots()
-        val candidates = routes.map { FlowBalancer.candidate(it) }
-        val best = FlowBalancer.chooseNext(candidates)?.id
-        val validatedCount = routes.count { it.validated }
-
-        content.addView(buildHeader())
-        addSpace(content, 22)
-        addText(content, "YOUR NETWORK, AT A GLANCE", 10f, accent, bold = true, spacing = 1.55f)
-        addSpace(content, 8)
-        addText(content, "Know your links.\nChoose with data.", 30f, white, bold = true)
-        addSpace(content, 9)
-        addText(content, "Discover the connections Android exposes, compare latency and speed, and see which route is performing best.", 14f, muted)
-        addSpace(content, 19)
-
-        content.addView(buildOverview(routes.size, validatedCount, routes.firstOrNull { it.id == best }))
-        addSpace(content, 12)
-        content.addView(buildVpnCard(routes))
-        addSpace(content, 12)
-        content.addView(buildSlotSettings(routes))
-        addSpace(content, 12)
-        content.addView(buildCombinedSpeed(routes))
-        addSpace(content, 12)
-        content.addView(buildActions())
-        addSpace(content, 12)
-        content.addView(buildRoutes(routes, best))
-        addSpace(content, 12)
-        content.addView(buildCaveat())
-        addSpace(content, 12)
-        content.addView(buildTips())
-        addSpace(content, 22)
-        addText(content, "MULTIPATH  ·  NETWORK DIAGNOSTICS", 10f, muted, bold = true, spacing = 0.8f)
-        content.post { scroller.scrollTo(0, previousScroll) }
-    }
-
-    private fun buildHeader(): View {
-        val row = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        val logo = ImageView(this).apply {
-            setImageResource(R.drawable.ic_brand_mark)
-            contentDescription = "MultiPath app logo"
-            scaleType = ImageView.ScaleType.FIT_CENTER
-            layoutParams = LinearLayout.LayoutParams(dp(48), dp(48))
-        }
-        row.addView(logo)
-        val nameBlock = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(10), 0, 0, 0)
-        }
-        nameBlock.addView(text("MultiPath", 17f, white, true))
-        nameBlock.addView(text("NETWORK INTELLIGENCE", 9f, muted, true).apply { letterSpacing = 1.05f })
-        row.addView(nameBlock, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        val badge = text(if (running) "● TESTING" else "● READY", 10f, if (running) amber else accent, true).apply {
-            setPadding(dp(10), dp(8), dp(10), dp(8))
-            background = shape(surface2, 24, line)
-            contentDescription = if (running) "Network tests are running" else "App ready"
-        }
-        row.addView(badge)
-        return row
-    }
-
-    private fun buildOverview(total: Int, validated: Int, best: LinkSnapshot?): View {
-        val card = card()
-        addText(card, "LINK OVERVIEW", 11f, muted, true, 1.3f)
-        addSpace(card, 12)
-        val metrics = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        metrics.addView(metric("$total", "ROUTES SEEN", accent), weightParams())
-        addVerticalDivider(metrics)
-        metrics.addView(metric("$validated", "VALIDATED", blue), weightParams())
-        addVerticalDivider(metrics)
-        val latency = best?.latencyMs?.let { "$it ms" } ?: "—"
-        metrics.addView(metric(latency, "LEADER RTT", amber), weightParams())
-        card.addView(metrics)
-        addSpace(card, 13)
-        val message = when {
-            total == 0 -> "No internet-capable routes surfaced yet. Turn on Wi-Fi or mobile data and scan again."
-            validated == 0 -> "Android sees route(s), but none are validated for internet access yet."
-            best != null && best.measuredMbps != null -> "Current leader: ${best.transport}, measured at ${formatMbps(best.measuredMbps)} download."
-            best != null -> "Current leader: ${best.transport}, based on Android's advertised link estimate. Run a speed test for a real measurement."
-            else -> "Routes found. Run latency checks to see which ones can reach the test endpoint."
-        }
-        addText(card, message, 13f, muted)
-        return card
-    }
-
-    private fun buildSlotSettings(routes: List<LinkSnapshot>): View {
-        val card = card()
-        addText(card, "CONNECTION SLOT SETTINGS", 11f, muted, true, 1.3f)
-        addSpace(card, 6)
-        addText(card, "Choose how many paths you want the manager to consider. Android can expose fewer real paths than the configured slots.", 12f, muted)
-        addSpace(card, 12)
-        slotRow(card, "Cellular routes", "Up to 2 phone SIM routes; carrier name may not be exposed", simSlots, 0, 2) { simSlots = it; prefs.edit().putInt("sim_slots", it).apply() }
-        addSpace(card, 8)
-        slotRow(card, "Wi-Fi route slots", "Includes ordinary Wi-Fi and Wi-Fi hotspots", wifiSlots, 0, 4) { wifiSlots = it; prefs.edit().putInt("wifi_slots", it).apply() }
-        addSpace(card, 8)
-        slotRow(card, "Extra hotspot slots", "Only useful when Android exposes extra routes", hotspotSlots, 0, 4) { hotspotSlots = it; prefs.edit().putInt("hotspot_slots", it).apply() }
-        addSpace(card, 10)
-        val cellFound = routes.count { it.transport == "Mobile data" }
-        val wifiFound = routes.count { it.transport == "Wi-Fi" }
-        addText(card, "Currently exposed by Android: $cellFound cellular route(s), $wifiFound Wi-Fi route(s).", 12f, accent)
-        addSpace(card, 4)
-        addText(card, "The slot limit is the maximum number of Android-exposed routes considered, not a way to create extra radios. A hotspot is usually reported as Wi-Fi, and this app cannot reliably label a route Safaricom, Airtel or Telkom without carrier information Android makes available.", 11f, muted)
-        return card
-    }
-
-    private fun slotRow(parent: LinearLayout, title: String, subtitle: String, value: Int, min: Int, max: Int, update: (Int) -> Unit) {
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        val labels = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        labels.addView(text(title, 14f, white, true))
-        labels.addView(text(subtitle, 11f, muted))
-        row.addView(labels, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        row.addView(actionButton("−", false) { if (value > min) { update(value - 1); render() } }.apply { layoutParams = LinearLayout.LayoutParams(dp(44), dp(42)) })
-        addSpace(row, 8, horizontal = true)
-        row.addView(text(value.toString(), 17f, accent, true).apply { gravity = Gravity.CENTER; layoutParams = LinearLayout.LayoutParams(dp(28), dp(42)) })
-        addSpace(row, 8, horizontal = true)
-        row.addView(actionButton("+", false) { if (value < max) { update(value + 1); render() } }.apply { layoutParams = LinearLayout.LayoutParams(dp(44), dp(42)) })
-        parent.addView(row)
-    }
-
-    private fun eligibleRoutes(routes: List<LinkSnapshot>): List<LinkSnapshot> =
-        RoutePolicy.eligible(routes, simSlots, wifiSlots, hotspotSlots)
-
-    private fun buildCombinedSpeed(routes: List<LinkSnapshot>): View {
-        val card = card(fill = surface2, outline = line)
-        val selected = eligibleRoutes(routes).filter { it.validated }
-        val measured = selected.mapNotNull { it.measuredMbps }
-        val total = measured.sum()
-        addText(card, "SPEED SUMMARY", 11f, muted, true, 1.3f)
-        addSpace(card, 9)
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        val metric = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        metric.addView(text(lastParallelAggregateMbps?.let { formatMbps(it) } ?: "—", 27f, accent, true))
-        metric.addView(text("SIMULTANEOUS TEST RESULT", 9f, muted, true))
-        row.addView(metric, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        row.addView(text("${measured.size} tested", 12f, blue, true))
-        card.addView(row)
-        addSpace(card, 8)
-        val best = selected.mapNotNull { it.measuredMbps }.maxOrNull()
-        addText(card, "Fastest individual route: ${best?.let { formatMbps(it) } ?: "not tested yet"}.", 12f, white)
-        addSpace(card, 5)
-        addText(card, "Separately tested route rates sum to ${if (measured.isEmpty()) "not available" else formatMbps(total)}. This is a comparison, not a verified bonded speed. The simultaneous result above measures concurrent test downloads over the selected routes; normal phone traffic is still not bonded by this prototype.", 11f, muted)
-        if (lastParallelRouteCount > 0 && lastParallelDurationSeconds != null) {
-            addSpace(card, 5)
-            addText(card, "Last concurrent test: $lastParallelRouteCount route(s) over ${lastParallelDurationSeconds?.let { String.format(Locale.US, "%.1f", it) } ?: "—"} seconds.", 11f, blue)
-        }
-        return card
-    }
-
-    private fun buildActions(): View {
-        val card = card()
-        addText(card, "TEST YOUR CONNECTIONS", 11f, muted, true, 1.3f)
-        addSpace(card, 12)
-        card.addView(actionButton(if (running) "TEST RUNNING…" else "Measure latency on every route", true) {
-            runLatencyTests()
-        }.apply { isEnabled = !running })
-        addSpace(card, 8)
-        card.addView(actionButton("Download test  ·  up to 4 MB per route", false) {
-            confirmSpeedTest()
-        }.apply { isEnabled = !running })
-        addSpace(card, 8)
-        card.addView(actionButton("Concurrent aggregate test · up to 2 MB per route", false) {
-            confirmParallelSpeedTest()
-        }.apply { isEnabled = !running })
-        addSpace(card, 8)
-        card.addView(actionButton("Clear measurements", false) {
-            lastParallelAggregateMbps = null
-            lastParallelRouteCount = 0
-            lastParallelDurationSeconds = null
-            monitor.clearMeasurements()
-            status = "Measurements cleared."
-            render()
-        }.apply { isEnabled = !running })
-        addSpace(card, 11)
-        addText(card, status, 12f, if (status.contains("fail", true) || status.contains("error", true)) red else muted)
-        addSpace(card, 7)
-        addText(card, "The ordinary test transfers up to 4 MB per route. The concurrent test transfers up to 2 MB per route (up to 20 MB if ten routes are available). Both may consume mobile data; test only when you accept those charges.", 11f, muted)
-        return card
-    }
-
-    private fun buildRoutes(routes: List<LinkSnapshot>, bestId: String?): View {
-        val wrap = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        val head = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        head.addView(text("Available routes", 19f, white, true), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        head.addView(text("${routes.size} found", 12f, muted))
-        wrap.addView(head)
-        addSpace(wrap, 10)
-        if (routes.isEmpty()) {
-            val empty = card()
-            addText(empty, "Waiting for Android to expose a route", 15f, white, true)
-            addSpace(empty, 5)
-            addText(empty, "Check your Wi-Fi/mobile-data toggle, then press Scan links below.", 13f, muted)
-            addSpace(empty, 10)
-            empty.addView(actionButton("Scan links", false) {
-                status = "Scanning available Android routes…"
-                render()
-                monitor.scanNow()
-                Toast.makeText(this, "Network scan refreshed", Toast.LENGTH_SHORT).show()
-            })
-            wrap.addView(empty)
-        } else {
-            val sorted = routes.sortedWith(
-                compareByDescending<LinkSnapshot> { it.id == bestId }
-                    .thenByDescending { it.validated }
-                    .thenByDescending { it.measuredMbps ?: 0.0 }
-            )
-            sorted.forEach { link ->
-                wrap.addView(buildRouteCard(link, link.id == bestId))
-                addSpace(wrap, 9)
-            }
-        }
-        return wrap
-    }
-
-    private fun buildRouteCard(link: LinkSnapshot, isBest: Boolean): View {
-        val card = card()
-        val top = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        val icon = TextView(this).apply {
-            text = when (link.transport) {
-                "Wi-Fi" -> "W"
-                "Mobile data" -> "4G"
-                "Ethernet" -> "E"
-                else -> "N"
-            }
-            gravity = Gravity.CENTER
-            textSize = if (link.transport == "Mobile data") 12f else 16f
-            typeface = Typeface.DEFAULT_BOLD
-            setTextColor(if (isBest) bg else accent)
-            background = shape(if (isBest) accent else surface2, 13, if (isBest) accent else line)
-            layoutParams = LinearLayout.LayoutParams(dp(43), dp(43))
-        }
-        top.addView(icon)
-        val titleBlock = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(10), 0, dp(6), 0)
-        }
-        titleBlock.addView(text(link.transport, 16f, white, true))
-        titleBlock.addView(text(link.interfaceName?.let { "Interface $it" } ?: "Interface not reported", 11f, muted))
-        top.addView(titleBlock, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        val state = if (link.validated) "INTERNET OK" else "NOT VERIFIED"
-        top.addView(text(state, 9f, if (link.validated) accent else amber, true).apply {
-            setPadding(dp(7), dp(6), dp(7), dp(6))
-            background = shape(surface2, 18, line)
-        })
-        card.addView(top)
-        if (isBest) {
-            addSpace(card, 12)
-            addText(card, "RECOMMENDED BY CURRENT METRICS", 10f, accent, true, 0.6f)
-        }
-        addSpace(card, 13)
-        val stats = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        stats.addView(smallStat("Latency", link.latencyMs?.let { "$it ms" } ?: "Not tested", blue), weightParams())
-        stats.addView(smallStat("Measured download", link.measuredMbps?.let { formatMbps(it) } ?: "Not tested", accent), weightParams())
-        card.addView(stats)
-        addSpace(card, 11)
-        addText(card, "Android estimate: ↓ ${formatLinkRate(link.downstreamKbps)}   ↑ ${formatLinkRate(link.upstreamKbps)}", 12f, muted)
-        if (link.lastError != null) {
-            addSpace(card, 5)
-            addText(card, "Last test: ${link.lastError}", 11f, red)
-        }
-        return card
-    }
-
-    private fun buildCaveat(): View {
-        val card = card(fill = surface2, outline = line)
-        addText(card, "HOW IT WORKS · LIMITS", 11f, amber, true, 1.0f)
-        addSpace(card, 8)
-        addText(card, "Start balancing opens an on-device VPN (no server, nothing leaves your phone except normal traffic). Every new TCP or UDP connection is relayed over the Wi-Fi or mobile-data route with the most spare capacity, with automatic retry on another route if one fails. This is per-connection balancing, not packet-level bonding: it needs no remote server, but a single connection is capped by its one route.", 13f, white)
-        addSpace(card, 8)
-        addText(card, "One network cannot magically exceed its ISP/router capacity. Combining links mainly helps workloads that open multiple independent connections, and results depend on both links and the destination.", 12f, muted)
-        return card
-    }
-
-    private fun buildTips(): View {
-        val card = card()
-        addText(card, "QUICK WI-FI IMPROVEMENTS", 11f, muted, true, 1.2f)
-        addSpace(card, 9)
-        tip(card, "01", "Near the router", "Try 5 GHz or 6 GHz if supported; 2.4 GHz usually reaches farther through walls.")
-        addSpace(card, 10)
-        tip(card, "02", "Compare like for like", "Run tests two or three times. If every route is slow, the bottleneck may be your ISP or the destination, not Wi-Fi strength.")
-        addSpace(card, 10)
-        tip(card, "03", "Switch network safely", "Use Android's own settings to pick a known Wi-Fi network; this app never reads or stores Wi-Fi passwords.")
-        addSpace(card, 13)
-        val buttons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        buttons.addView(actionButton("Wi-Fi settings", false) { openSettings(Settings.ACTION_WIFI_SETTINGS) }, weightParams())
-        addSpace(buttons, 8, horizontal = true)
-        buttons.addView(actionButton("Internet settings", false) { openSettings(Settings.ACTION_WIRELESS_SETTINGS) }, weightParams())
-        card.addView(buttons)
-        addSpace(card, 10)
-        card.addView(actionButton("Scan links again", true) {
-            status = "Refreshing route list…"
-            monitor.scanNow()
-            render()
-        })
-        return card
-    }
-
-    private fun runLatencyTests() {
-        val routes = eligibleRoutes(monitor.snapshots())
-        if (routes.isEmpty()) {
-            status = "No internet-capable route is available within your selected slots."
-            render()
-            return
-        }
-        running = true
-        status = "Testing HTTPS response time on ${routes.size} route(s)…"
-        render()
-        worker.execute {
-            var succeeded = 0
-            routes.forEachIndexed { index, route ->
-                try {
-                    val latency = NetworkTester.latencyMs(route.network)
-                    monitor.recordLatency(route.network, latency)
-                    succeeded++
-                } catch (error: Exception) {
-                    monitor.recordError(route.network, shortError(error))
-                }
-                mainHandler.post {
-                    status = "Latency checks: ${index + 1}/${routes.size} route(s) complete."
-                    render()
-                }
-            }
-            mainHandler.post {
-                running = false
-                status = "Latency test finished: $succeeded/${routes.size} routes responded."
-                render()
-            }
-        }
-    }
-
-    private fun confirmSpeedTest() {
-        val routes = eligibleRoutes(monitor.snapshots()).filter { it.validated }
-        if (routes.isEmpty()) {
-            status = "No validated route is ready for a download test. Run latency checks first."
-            render()
-            return
-        }
-        AlertDialog.Builder(this)
-            .setTitle("Run download tests?")
-            .setMessage("This downloads up to 4 MB over each of ${routes.size} validated route(s). It can consume mobile data. Continue?")
-            .setNegativeButton("Cancel", null)
-            .setPositiveButton("Test routes") { _, _ -> runSpeedTests(routes.map { it.network }) }
-            .show()
-    }
-
-    private fun runSpeedTests(networks: List<Network>) {
-        running = true
-        status = "Measuring download rate over ${networks.size} route(s)…"
-        render()
-        worker.execute {
-            var succeeded = 0
-            networks.forEachIndexed { index, network ->
-                try {
-                    val mbps = NetworkTester.downloadMbps(network)
-                    monitor.recordSpeed(network, mbps)
-                    succeeded++
-                } catch (error: Exception) {
-                    monitor.recordError(network, shortError(error))
-                }
-                mainHandler.post {
-                    status = "Download tests: ${index + 1}/${networks.size} route(s) complete."
-                    render()
-                }
-            }
-            mainHandler.post {
-                running = false
-                status = "Download test finished: $succeeded/${networks.size} routes measured."
-                render()
-            }
-        }
-    }
-
-    private fun confirmParallelSpeedTest() {
-        val routes = eligibleRoutes(monitor.snapshots()).filter { it.validated }
-        if (routes.isEmpty()) {
-            status = "No validated routes are ready for a concurrent test."
-            render()
-            return
-        }
-        val maximumMb = routes.size * 2
-        AlertDialog.Builder(this)
-            .setTitle("Run concurrent aggregate test?")
-            .setMessage("This downloads up to 2 MB on each of ${routes.size} validated route(s), up to $maximumMb MB total. It measures simultaneous test throughput, not bonded phone traffic. Mobile-data charges may apply.")
-            .setNegativeButton("Cancel", null)
-            .setPositiveButton("Run test") { _, _ -> runParallelSpeedTest(routes.map { it.network }) }
-            .show()
-    }
-
-    private fun runParallelSpeedTest(networks: List<Network>) {
-        running = true
-        status = "Starting simultaneous downloads across ${networks.size} route(s)…"
-        render()
-        worker.execute {
-            try {
-                val result = NetworkTester.parallelDownloadMbps(networks)
-                result.routes.forEach { route -> monitor.recordSpeed(route.network, route.mbps) }
-                mainHandler.post {
-                    lastParallelAggregateMbps = result.aggregateMbps
-                    lastParallelRouteCount = result.routes.size
-                    lastParallelDurationSeconds = result.elapsedSeconds
-                    running = false
-                    status = "Concurrent test complete: ${formatMbps(result.aggregateMbps)} across ${result.routes.size} route(s)."
-                    render()
-                }
-            } catch (error: Exception) {
-                mainHandler.post {
-                    running = false
-                    status = "Concurrent test failed: ${shortError(error)}"
-                    render()
-                }
-            }
-        }
-    }
-
-    private fun shareDiagnostics(routes: List<LinkSnapshot>) {
-        val report = buildString {
-            appendLine("MultiPath Mobile diagnostics")
-            appendLine("App version: 0.5.0")
-            appendLine("Device: ${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}")
-            appendLine("Android: ${android.os.Build.VERSION.RELEASE} (SDK ${android.os.Build.VERSION.SDK_INT})")
-            appendLine("Configured slots: cellular=$simSlots, Wi-Fi=$wifiSlots, extra hotspots=$hotspotSlots")
-            appendLine("Routes exposed: ${routes.size}")
-            routes.forEachIndexed { index, route ->
-                appendLine("${index + 1}. ${route.transport}; interface=${route.interfaceName ?: "unknown"}; validated=${route.validated}; latency=${route.latencyMs?.let { "$it ms" } ?: "untested"}; measured=${route.measuredMbps?.let { formatMbps(it) } ?: "untested"}; Android estimate down=${formatLinkRate(route.downstreamKbps)}, up=${formatLinkRate(route.upstreamKbps)}")
-                route.lastError?.let { appendLine("   last error=$it") }
-            }
-            appendLine("Concurrent aggregate benchmark: ${lastParallelAggregateMbps?.let { formatMbps(it) } ?: "not run"}")
-            appendLine("Note: this prototype does not yet route all device traffic through a bonding engine.")
-            appendLine("No Wi-Fi passwords, account credentials or browsing history are included.")
-        }
-        val intent = Intent(Intent.ACTION_SEND).apply {
-            type = "text/plain"
-            putExtra(Intent.EXTRA_SUBJECT, "MultiPath Mobile diagnostics")
-            putExtra(Intent.EXTRA_TEXT, report)
-        }
-        startActivity(Intent.createChooser(intent, "Share diagnostic report"))
-    }
-
-    private fun openSettings(action: String) {
-        try {
-            startActivity(Intent(action))
-        } catch (_: ActivityNotFoundException) {
-            startActivity(Intent(Settings.ACTION_SETTINGS))
-        }
-    }
-
-    private fun buildHeaderSpacer() = View(this)
-
     private fun card(fill: Int = surface, outline: Int = line): LinearLayout = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
         setPadding(dp(16), dp(16), dp(16), dp(16))
         background = shape(fill, 20, outline)
         layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-    }
-
-    private fun metric(value: String, label: String, valueColor: Int): LinearLayout = LinearLayout(this).apply {
-        orientation = LinearLayout.VERTICAL
-        gravity = Gravity.CENTER_VERTICAL
-        addView(text(value, 21f, valueColor, true))
-        addSpace(this, 4)
-        addView(text(label, 8.5f, muted, true).apply { letterSpacing = 0.45f })
-    }
-
-    private fun smallStat(label: String, value: String, valueColor: Int): LinearLayout = LinearLayout(this).apply {
-        orientation = LinearLayout.VERTICAL
-        addView(text(label, 10f, muted, true))
-        addSpace(this, 4)
-        addView(text(value, 15f, valueColor, true))
-    }
-
-    private fun tip(parent: LinearLayout, number: String, title: String, body: String) {
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        row.addView(text(number, 11f, accent, true).apply {
-            gravity = Gravity.CENTER
-            background = shape(surface2, 9)
-            layoutParams = LinearLayout.LayoutParams(dp(34), dp(34))
-        })
-        val content = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(10), 0, 0, 0)
-        }
-        content.addView(text(title, 14f, white, true))
-        addSpace(content, 3)
-        content.addView(text(body, 12f, muted))
-        row.addView(content, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        parent.addView(row)
     }
 
     private fun actionButton(label: String, primary: Boolean, action: () -> Unit): TextView = TextView(this).apply {
@@ -724,32 +511,12 @@ class MainActivity : Activity() {
         })
     }
 
-    private fun addVerticalDivider(parent: LinearLayout) {
-        val divider = View(this).apply { setBackgroundColor(line) }
-        parent.addView(divider, LinearLayout.LayoutParams(dp(1), dp(43)).apply {
-            marginStart = dp(8)
-            marginEnd = dp(8)
-        })
-    }
-
     private fun weightParams() = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
 
     private fun shape(fill: Int, radiusDp: Int, stroke: Int? = null): GradientDrawable = GradientDrawable().apply {
         setColor(fill)
         cornerRadius = dp(radiusDp).toFloat()
         if (stroke != null) setStroke(dp(1), stroke)
-    }
-
-    private fun formatLinkRate(kbps: Int): String = if (kbps <= 0) "—" else {
-        val mbps = kbps / 1000.0
-        String.format(Locale.US, "%.1f Mbps", mbps)
-    }
-
-    private fun formatMbps(mbps: Double): String = String.format(Locale.US, "%.1f Mbps", mbps)
-
-    private fun shortError(error: Exception): String {
-        val message = error.message?.takeIf { it.isNotBlank() } ?: error.javaClass.simpleName
-        return message.replace('\n', ' ').take(70)
     }
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()

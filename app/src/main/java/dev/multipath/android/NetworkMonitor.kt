@@ -20,6 +20,7 @@ class NetworkMonitor(
     private val entries = linkedMapOf<Network, LinkSnapshot>()
     private val mainHandler = Handler(Looper.getMainLooper())
     private var registered = false
+    private val extraListener = Runnable { publish() }
     private val keepAliveRequest = NetworkRequest.Builder()
         .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
         .addTransportType(NetworkCapabilities.TRANSPORT_CELLULAR)
@@ -47,6 +48,7 @@ class NetworkMonitor(
             if (registered) return
             registered = true
         }
+        ExtraWifi.addListener(extraListener)
         try {
             manager.registerNetworkCallback(request, callback)
             manager.allNetworks.forEach { refresh(it) }
@@ -74,6 +76,7 @@ class NetworkMonitor(
             }
         }
         if (shouldUnregister) {
+            ExtraWifi.removeListener(extraListener)
             try {
                 manager.unregisterNetworkCallback(callback)
             } catch (_: RuntimeException) {
@@ -94,8 +97,11 @@ class NetworkMonitor(
         publish()
     }
 
-    fun snapshots(): List<LinkSnapshot> = synchronized(lock) {
-        entries.values.toList().sortedWith(
+    fun snapshots(): List<LinkSnapshot> {
+        val own = synchronized(lock) { entries.values.toList() }
+        val extras = ExtraWifi.snapshots()
+        val extraIds = extras.map { it.id }.toSet()
+        return (own.filter { it.id !in extraIds } + extras).sortedWith(
             compareByDescending<LinkSnapshot> { it.validated }
                 .thenByDescending { it.measuredMbps ?: 0.0 }
                 .thenBy { it.transport }
@@ -178,7 +184,7 @@ class NetworkMonitor(
 
     companion object {
         /** Speed results survive across monitor instances so the VPN can reuse app tests. */
-        private val sharedSpeed = java.util.concurrent.ConcurrentHashMap<String, Double>()
+        val sharedSpeed = java.util.concurrent.ConcurrentHashMap<String, Double>()
     }
 
     private fun publish() {

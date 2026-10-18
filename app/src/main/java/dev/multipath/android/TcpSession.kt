@@ -40,6 +40,8 @@ class TcpSession(
     private var clientWindow = 65535
     private var socket: Socket? = null
     private var route: Route? = null
+    @Volatile
+    private var routeName = ""
     private var clientFin = false
     private var serverFinSent = false
     private var zeroWindowSent = false
@@ -99,6 +101,7 @@ class TcpSession(
             } else {
                 socket = sock
                 route = chosen
+                routeName = chosen.label
                 emit(PacketUtil.SYN or PacketUtil.ACK, null, 0, 0, PacketUtil.MSS)
                 mySeq = (mySeq + 1) and PacketUtil.MASK
                 acked = mySeq
@@ -125,7 +128,7 @@ class TcpSession(
                 }
                 out.write(chunk)
                 out.flush()
-                VpnStats.bytesUp.addAndGet(chunk.size.toLong())
+                VpnStats.addUp(routeName, chunk.size.toLong())
                 lastActive = System.currentTimeMillis()
                 val left = queuedBytes.addAndGet(-chunk.size)
                 if (left < 32 * 1024) {
@@ -167,7 +170,7 @@ class TcpSession(
                         }
                     }
                     if (!sent) return
-                    VpnStats.bytesDown.addAndGet(len.toLong())
+                    VpnStats.addDown(routeName, len.toLong())
                     lastActive = System.currentTimeMillis()
                     offset += len
                 }

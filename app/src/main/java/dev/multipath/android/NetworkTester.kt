@@ -24,7 +24,7 @@ object NetworkTester {
         connection.requestMethod = "GET"
         connection.instanceFollowRedirects = false
         connection.useCaches = false
-        connection.setRequestProperty("User-Agent", "MultiPath-Mobile/0.5.0")
+        connection.setRequestProperty("User-Agent", "MultiPath-Mobile/0.6.0")
         val started = System.nanoTime()
         try {
             val code = connection.responseCode
@@ -93,7 +93,7 @@ object NetworkTester {
         connection.requestMethod = "GET"
         connection.instanceFollowRedirects = false
         connection.useCaches = false
-        connection.setRequestProperty("User-Agent", "MultiPath-Mobile/0.5.0")
+        connection.setRequestProperty("User-Agent", "MultiPath-Mobile/0.6.0")
         val started = System.nanoTime()
         var total = 0L
         try {
