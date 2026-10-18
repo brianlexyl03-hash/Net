@@ -1,8 +1,8 @@
-# MultiPath — Android network diagnostics (v0.4.0)
+# MultiPath — Android network diagnostics (v0.5.0)
 
 A native Android Kotlin project inspired by the MIT-licensed desktop project [uditya-kumar/MultiPath](https://github.com/uditya-kumar/MultiPath). This is an independent Android companion prototype, not an official release or endorsed fork.
 
-## Visual and UX refresh (v0.4.0)
+## Visual and UX refresh (v0.5.0)
 
 - New custom MultiPath launcher icon: dark navy tile with a violet/cyan/mint multi-route mark; adaptive and round launcher icon resources included.
 - Replaced the placeholder letter avatar in the app header with the branded mark and simplified the top-level product identity.
@@ -21,11 +21,20 @@ A native Android Kotlin project inspired by the MIT-licensed desktop project [ud
 - Links to Android Wi-Fi and Internet settings; does not read or store Wi-Fi passwords.
 - Includes unit tests for the flow-selection policy and a GitHub Actions workflow that runs tests and builds a debug APK artifact.
 
+## Traffic balancer (v0.5.0)
+
+Tap **Start balancing** to run an on-device VPN (`MultiPathVpnService`). It reads IPv4 packets from the TUN interface, terminates each TCP connection and UDP flow in a small user-space relay, and re-opens it over a socket bound to a specific Android `Network`. `FlowBalancer` picks the Wi-Fi or mobile-data route for every new connection; if connecting fails it retries on another route. No server or account is needed.
+
+- Works on Android 8.0+ (min SDK 26) with the standard VPN consent dialog.
+- Keeps mobile data connected while Wi-Fi is the default so both links can carry traffic.
+- Per-connection balancing: many parallel connections speed up, a single download stays capped by its one route.
+- IPv6 traffic bypasses the tunnel; DNS goes through 1.1.1.1 / 8.8.8.8 over the chosen route.
+- Only one VPN can be active at a time on Android; some OEM battery managers may stop background apps, so exclude MultiPath from battery optimisation.
+- Not Play-Store verified; test on your own devices (see `PLAY_STORE_READINESS.md`).
+
 ## Important limitations
 
-**This is not yet a system-wide internet speed booster or traffic-bonding VPN.** The app inspects and tests routes, but does not redirect ordinary traffic from other apps or merge mobile data and Wi-Fi into one connection. The concurrent benchmark is a measurement tool, not proof of bonding.
-
-A complete Android traffic engine requires a user-approved `VpnService`, a TUN packet reader/writer, per-flow routing and socket binding to Android `Network` objects, DNS and IPv4/IPv6 handling, route failover, UDP/QUIC policy, VPN-conflict handling, battery/background behavior and real-device testing. True single-download bonding usually requires a remote bonding endpoint as well. Those parts must not be advertised as complete until implemented and verified.
+**This is not packet-level bonding.** True single-download bonding needs a remote bonding endpoint, which this project does not include. The concurrent benchmark remains a measurement tool.
 
 ### Hardware and Android route constraints
 
@@ -36,7 +45,7 @@ A complete Android traffic engine requires a user-approved `VpnService`, a TUN p
 
 ## Build and release
 
-Open the project root in Android Studio with Android SDK Platform 35 and JDK 17. Allow Gradle sync, then run the `app` configuration on an Android 8.0+ device or emulator. CI runs unit tests, Android lint and a debug build. A version tag such as `v0.4.0` triggers a release bundle build; the resulting AAB is unsigned and still requires publisher signing, Play App Signing setup and release verification. See `PLAY_STORE_READINESS.md` before publication.
+Open the project root in Android Studio with Android SDK Platform 35 and JDK 17. Allow Gradle sync, then run the `app` configuration on an Android 8.0+ device or emulator. CI runs unit tests, Android lint and a debug build. A version tag such as `v0.5.0` triggers a release bundle build; the resulting AAB is unsigned and still requires publisher signing, Play App Signing setup and release verification. See `PLAY_STORE_READINESS.md` before publication.
 
 ## Data usage and privacy
 
@@ -55,4 +64,4 @@ Open the project root in Android Studio with Android SDK Platform 35 and JDK 17.
 
 ## Repository upload note
 
-This ZIP is arranged with the Android project at the repository root. Extract it and upload the contents of this folder (including the hidden `.github` folder) to the root of your GitHub repository. The GitHub Actions workflow will then run automatically on push.
+This project is arranged with the Android project at the repository root. Extract it and upload the contents of this folder (including the hidden `.github` folder) to the root of your GitHub repository. The GitHub Actions workflow will then run automatically on push.

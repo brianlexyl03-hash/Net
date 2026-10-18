@@ -1,6 +1,6 @@
 # MultiPath Mobile — Release readiness checklist
 
-This project is a native Android network-diagnostics app. **It is not currently a production-verified, system-wide bonding VPN.** Do not market it as one.
+This project is a native Android network-diagnostics app. **It now includes an on-device per-connection traffic balancer (VpnService) that has NOT yet been verified on physical devices. Do not market it as bonding or guaranteed speed-up.**
 
 ## Implemented in this source
 - Native Kotlin Android application, custom dark UI and adaptive launcher icon.
@@ -24,6 +24,6 @@ This project is a native Android network-diagnostics app. **It is not currently 
 
 ## Version
 - Application ID: `dev.multipath.android` (confirm publisher ownership before public release)
-- Version: `0.4.0` / versionCode `4`
+- Version: `0.5.0` / versionCode `5`
 - minSdk 26, targetSdk 35
 - CI builds are test artifacts. A tagged unsigned AAB is not signed and is not ready to upload as a final release without publisher signing and verification.

@@ -12,6 +12,7 @@ import android.os.Looper
 /** Watches network routes supplied by Android; it never changes Wi-Fi settings. */
 class NetworkMonitor(
     context: Context,
+    private val keepCellularAlive: Boolean = false,
     private val onChanged: (List<LinkSnapshot>) -> Unit,
 ) {
     private val manager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
@@ -19,6 +20,12 @@ class NetworkMonitor(
     private val entries = linkedMapOf<Network, LinkSnapshot>()
     private val mainHandler = Handler(Looper.getMainLooper())
     private var registered = false
+    private val keepAliveRequest = NetworkRequest.Builder()
+        .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        .addTransportType(NetworkCapabilities.TRANSPORT_CELLULAR)
+        .build()
+    private val keepAliveCallback = object : ConnectivityManager.NetworkCallback() {}
+    private var keepAliveRegistered = false
 
     private val request = NetworkRequest.Builder()
         .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
@@ -43,6 +50,16 @@ class NetworkMonitor(
         try {
             manager.registerNetworkCallback(request, callback)
             manager.allNetworks.forEach { refresh(it) }
+            if (keepCellularAlive) {
+                // Asking for a cellular network keeps the mobile radio connected while Wi-Fi is
+                // the default route, which is what lets both links carry traffic at once.
+                try {
+                    manager.requestNetwork(keepAliveRequest, keepAliveCallback)
+                    keepAliveRegistered = true
+                } catch (_: RuntimeException) {
+                    keepAliveRegistered = false
+                }
+            }
         } catch (error: RuntimeException) {
             synchronized(lock) { registered = false }
             publish()
@@ -61,6 +78,13 @@ class NetworkMonitor(
                 manager.unregisterNetworkCallback(callback)
             } catch (_: RuntimeException) {
                 // The callback may already have been removed by Android.
+            }
+            if (keepAliveRegistered) {
+                keepAliveRegistered = false
+                try {
+                    manager.unregisterNetworkCallback(keepAliveCallback)
+                } catch (_: RuntimeException) {
+                }
             }
         }
     }
@@ -87,6 +111,7 @@ class NetworkMonitor(
     }
 
     fun recordSpeed(network: Network, mbps: Double) {
+        sharedSpeed[network.toString()] = mbps
         synchronized(lock) {
             val old = entries[network] ?: return
             entries[network] = old.copy(measuredMbps = mbps, lastError = null)
@@ -103,6 +128,7 @@ class NetworkMonitor(
     }
 
     fun clearMeasurements() {
+        sharedSpeed.clear()
         synchronized(lock) {
             entries.replaceAll { _, old -> old.copy(latencyMs = null, measuredMbps = null, lastError = null) }
         }
@@ -143,11 +169,16 @@ class NetworkMonitor(
                 upstreamKbps = capabilities.linkUpstreamBandwidthKbps,
                 interfaceName = properties?.interfaceName,
                 latencyMs = old?.latencyMs,
-                measuredMbps = old?.measuredMbps,
+                measuredMbps = old?.measuredMbps ?: sharedSpeed[network.toString()],
                 lastError = old?.lastError,
             )
         }
         publish()
+    }
+
+    companion object {
+        /** Speed results survive across monitor instances so the VPN can reuse app tests. */
+        private val sharedSpeed = java.util.concurrent.ConcurrentHashMap<String, Double>()
     }
 
     private fun publish() {

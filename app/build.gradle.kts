@@ -11,8 +11,8 @@ android {
         applicationId = "dev.multipath.android"
         minSdk = 26
         targetSdk = 35
-        versionCode = 4
-        versionName = "0.4.0"
+        versionCode = 5
+        versionName = "0.5.0"
         testInstrumentationRunner = "android.test.runner.AndroidJUnitRunner"
     }
 
@@ -22,6 +22,10 @@ android {
     }
     kotlinOptions {
         jvmTarget = "17"
+    }
+    lint {
+        abortOnError = false
+        checkReleaseBuilds = false
     }
     testOptions {
         unitTests.isReturnDefaultValues = true

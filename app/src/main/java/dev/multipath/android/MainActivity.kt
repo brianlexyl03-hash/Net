@@ -7,7 +7,11 @@ import android.content.Intent
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.Manifest
+import android.content.pm.PackageManager
 import android.net.Network
+import android.net.VpnService
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -49,6 +53,12 @@ class MainActivity : Activity() {
     private var simSlots = 2
     private var wifiSlots = 2
     private var hotspotSlots = 2
+    private val ticker = object : Runnable {
+        override fun run() {
+            if (MultiPathVpnService.running) render()
+            mainHandler.postDelayed(this, 2_000)
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -80,16 +90,105 @@ class MainActivity : Activity() {
     override fun onStart() {
         super.onStart()
         monitor.start()
+        mainHandler.postDelayed(ticker, 2_000)
     }
 
     override fun onStop() {
+        mainHandler.removeCallbacks(ticker)
         monitor.stop()
         super.onStop()
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQUEST_VPN) {
+            if (resultCode == RESULT_OK) launchVpn() else {
+                status = "VPN permission was not granted, so traffic balancing stays off."
+                render()
+            }
+        }
+    }
+
+    private fun toggleVpn() {
+        if (MultiPathVpnService.running) {
+            startService(Intent(this, MultiPathVpnService::class.java).setAction(MultiPathVpnService.ACTION_STOP))
+            status = "Traffic balancing stopped."
+            mainHandler.postDelayed({ render() }, 400)
+            return
+        }
+        if (Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQUEST_NOTIFICATIONS)
+        }
+        val consent = VpnService.prepare(this)
+        if (consent != null) {
+            @Suppress("DEPRECATION")
+            startActivityForResult(consent, REQUEST_VPN)
+        } else {
+            launchVpn()
+        }
+    }
+
+    private fun launchVpn() {
+        val intent = Intent(this, MultiPathVpnService::class.java).setAction(MultiPathVpnService.ACTION_START)
+        try {
+            startForegroundService(intent)
+            status = "Traffic balancing starting…"
+        } catch (error: Exception) {
+            status = "Could not start the VPN engine: ${error.message ?: "unknown error"}"
+        }
+        mainHandler.postDelayed({ render() }, 800)
+    }
+
+    private fun buildVpnCard(routes: List<LinkSnapshot>): View {
+        val on = MultiPathVpnService.running
+        val card = card(fill = surface2, outline = if (on) accent else line)
+        addText(card, "TRAFFIC BALANCER", 11f, if (on) accent else muted, true, 1.3f)
+        addSpace(card, 8)
+        addText(
+            card,
+            if (on) "ON. New connections from your apps are being shared across Wi-Fi and mobile data."
+            else "Shares your apps' connections across every Wi-Fi and mobile-data route Android exposes. Each new connection goes to the route with the most spare capacity.",
+            13f, white,
+        )
+        addSpace(card, 12)
+        card.addView(actionButton(if (on) "Stop balancing" else "Start balancing", !on) { toggleVpn() })
+        if (on) {
+            addSpace(card, 12)
+            val perRoute = VpnStats.flowsByRoute.entries.sortedBy { it.key }
+            addText(card, "Active connections: ${VpnStats.activeTcp.get()}  ·  TCP opened: ${VpnStats.tcpOpened.get()}  ·  UDP flows: ${VpnStats.udpOpened.get()}", 12f, blue)
+            addSpace(card, 4)
+            addText(card, "Sent ${formatBytes(VpnStats.bytesUp.get())}  ·  Received ${formatBytes(VpnStats.bytesDown.get())}", 12f, muted)
+            if (perRoute.isNotEmpty()) {
+                addSpace(card, 6)
+                perRoute.forEach { addText(card, "${it.key}: ${it.value.get()} connection(s)", 12f, accent) }
+            }
+        } else if (routes.count { it.validated } < 2) {
+            addSpace(card, 8)
+            addText(card, "Only ${routes.count { it.validated }} usable route right now. Turn on both Wi-Fi and mobile data to share load.", 11f, amber)
+        }
+        addSpace(card, 8)
+        addText(card, "Each single connection still uses one route, so a single download cannot exceed that route. Many parallel connections (browsing, apps, torrents, multi-part downloads) are what get faster. IPv6 traffic and other VPN apps are not balanced. Only one VPN can be active on Android at a time.", 11f, muted)
+        return card
+    }
+
+    private fun formatBytes(bytes: Long): String = when {
+        bytes >= 1_000_000_000L -> String.format(Locale.US, "%.2f GB", bytes / 1e9)
+        bytes >= 1_000_000L -> String.format(Locale.US, "%.1f MB", bytes / 1e6)
+        bytes >= 1_000L -> String.format(Locale.US, "%.0f KB", bytes / 1e3)
+        else -> "$bytes B"
     }
 
     override fun onDestroy() {
         worker.shutdownNow()
         super.onDestroy()
+    }
+
+    companion object {
+        private const val REQUEST_VPN = 41
+        private const val REQUEST_NOTIFICATIONS = 42
     }
 
     private fun render() {
@@ -111,6 +210,8 @@ class MainActivity : Activity() {
         addSpace(content, 19)
 
         content.addView(buildOverview(routes.size, validatedCount, routes.firstOrNull { it.id == best }))
+        addSpace(content, 12)
+        content.addView(buildVpnCard(routes))
         addSpace(content, 12)
         content.addView(buildSlotSettings(routes))
         addSpace(content, 12)
@@ -214,12 +315,8 @@ class MainActivity : Activity() {
         parent.addView(row)
     }
 
-    private fun eligibleRoutes(routes: List<LinkSnapshot>): List<LinkSnapshot> {
-        val cellular = routes.filter { it.transport == "Mobile data" }.take(simSlots)
-        val wifi = routes.filter { it.transport == "Wi-Fi" }.take(wifiSlots + hotspotSlots)
-        val other = routes.filter { it.transport != "Mobile data" && it.transport != "Wi-Fi" }
-        return (cellular + wifi + other).distinctBy { it.id }
-    }
+    private fun eligibleRoutes(routes: List<LinkSnapshot>): List<LinkSnapshot> =
+        RoutePolicy.eligible(routes, simSlots, wifiSlots, hotspotSlots)
 
     private fun buildCombinedSpeed(routes: List<LinkSnapshot>): View {
         val card = card(fill = surface2, outline = line)
@@ -369,9 +466,9 @@ class MainActivity : Activity() {
 
     private fun buildCaveat(): View {
         val card = card(fill = surface2, outline = line)
-        addText(card, "IMPORTANT · ANDROID PORT STATUS", 11f, amber, true, 1.0f)
+        addText(card, "HOW IT WORKS · LIMITS", 11f, amber, true, 1.0f)
         addSpace(card, 8)
-        addText(card, "This build discovers routes, lets you configure slot limits, measures individual routes and runs a simultaneous multi-route benchmark. It does NOT yet merge Wi-Fi + mobile data into one connection for every app. A real system-wide engine needs a user-approved VPNService/TUN, per-flow routing, DNS/IPv6 handling, route failover and extensive device testing.", 13f, white)
+        addText(card, "Start balancing opens an on-device VPN (no server, nothing leaves your phone except normal traffic). Every new TCP or UDP connection is relayed over the Wi-Fi or mobile-data route with the most spare capacity, with automatic retry on another route if one fails. This is per-connection balancing, not packet-level bonding: it needs no remote server, but a single connection is capped by its one route.", 13f, white)
         addSpace(card, 8)
         addText(card, "One network cannot magically exceed its ISP/router capacity. Combining links mainly helps workloads that open multiple independent connections, and results depend on both links and the destination.", 12f, muted)
         return card
@@ -521,7 +618,7 @@ class MainActivity : Activity() {
     private fun shareDiagnostics(routes: List<LinkSnapshot>) {
         val report = buildString {
             appendLine("MultiPath Mobile diagnostics")
-            appendLine("App version: 0.4.0")
+            appendLine("App version: 0.5.0")
             appendLine("Device: ${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}")
             appendLine("Android: ${android.os.Build.VERSION.RELEASE} (SDK ${android.os.Build.VERSION.SDK_INT})")
             appendLine("Configured slots: cellular=$simSlots, Wi-Fi=$wifiSlots, extra hotspots=$hotspotSlots")
