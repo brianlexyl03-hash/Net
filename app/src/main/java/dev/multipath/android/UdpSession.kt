@@ -13,6 +13,8 @@ class UdpSession(
     private val clientPort: Int,
     private val serverIp: Int,
     private val serverPort: Int,
+    val app: AppStats.Entry,
+    private val lowLatency: Boolean,
     private val sink: PacketSink,
     private val routes: RouteProvider,
     private val pool: ExecutorService,
@@ -38,7 +40,7 @@ class UdpSession(
         if (closed) return null
         val tried = HashSet<String>()
         for (attempt in 0 until 3) {
-            val candidate = routes.acquire(tried) ?: return null
+            val candidate = routes.acquire(tried, lowLatency) ?: return null
             tried.add(candidate.id)
             val s = DatagramSocket(null)
             try {
@@ -111,6 +113,7 @@ class UdpSession(
             s.send(DatagramPacket(buf.copyOfRange(offset, offset + length), length))
             VpnStats.addUp(routeName, length.toLong())
             Bundles.add(routeKey, length.toLong())
+            app.up.addAndGet(length.toLong())
         } catch (_: IOException) {
             close()
         }
@@ -125,6 +128,7 @@ class UdpSession(
                 lastActive = System.currentTimeMillis()
                 VpnStats.addDown(routeName, packet.length.toLong())
                 Bundles.add(routeKey, packet.length.toLong())
+                app.down.addAndGet(packet.length.toLong())
                 sink.write(PacketUtil.udpPacket(serverIp, serverPort, clientIp, clientPort, buffer, 0, packet.length))
             }
         } catch (_: IOException) {

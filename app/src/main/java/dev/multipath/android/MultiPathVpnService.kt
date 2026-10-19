@@ -35,6 +35,7 @@ class MultiPathVpnService : VpnService() {
     private var pool: ExecutorService? = null
     private var wifiLock: WifiManager.WifiLock? = null
     private var wakeLock: PowerManager.WakeLock? = null
+    private val pingSupplier: () -> List<LinkSnapshot> = { monitor?.snapshots().orEmpty() }
     private val tcp = ConcurrentHashMap<String, TcpSession>()
     private val udp = ConcurrentHashMap<String, UdpSession>()
 
@@ -101,8 +102,12 @@ class MultiPathVpnService : VpnService() {
     private fun startEngine(): Boolean {
         ExtraWifi.init(this)
         Bundles.init(this)
+        Blocker.init(this)
+        AppBlock.init(this)
+        Gaming.init(this)
         ExitServer.refresh(this)
         VpnStats.reset()
+        AppStats.reset()
         val builder = Builder()
             .setSession("MultiPath")
             .setMtu(1500)
@@ -135,6 +140,8 @@ class MultiPathVpnService : VpnService() {
         selector = RouteSelector(networkMonitor, prefs)
         pool = Executors.newCachedThreadPool { r -> Thread(r, "multipath-flow").apply { isDaemon = true } }
 
+        AppBlock.listener = { pool?.execute { killBlocked() } }
+        PingMonitor.start(pingSupplier)
         if (prefs.getBoolean("keep_awake", true)) acquireLocks()
         running = true
         engineThread = Thread({ packetLoop(descriptor) }, "multipath-tun").also { it.isDaemon = true; it.start() }
@@ -179,6 +186,15 @@ class MultiPathVpnService : VpnService() {
         }
     }
 
+    private fun rejectSyn(src: Int, srcPort: Int, dst: Int, dstPort: Int, seq: Long) {
+        sink.write(
+            PacketUtil.tcpPacket(
+                dst, dstPort, src, srcPort, 0L, (seq + 1) and PacketUtil.MASK,
+                PacketUtil.RST or PacketUtil.ACK, 0, null, 0, 0,
+            )
+        )
+    }
+
     private fun handleTcp(buf: ByteArray, off: Int, total: Int, src: Int, dst: Int) {
         if (total - off < 20) return
         val srcPort = PacketUtil.readU16(buf, off)
@@ -198,7 +214,20 @@ class MultiPathVpnService : VpnService() {
             if (isSyn) {
                 val pool = this.pool ?: return
                 val selector = this.selector ?: return
-                val created = TcpSession(key, src, srcPort, dst, dstPort, seq, sink, selector, pool) { tcp.remove(it.key, it) }
+                if (dstPort == 853 && Blocker.active()) {
+                    // Block DNS-over-TLS so lookups fall back to plain DNS that the blocker can see.
+                    rejectSyn(src, srcPort, dst, dstPort, seq)
+                    return
+                }
+                val owner = AppResolver.lookup(this, 6, src, srcPort, dst, dstPort)
+                if (AppBlock.isBlocked(owner.pkg)) {
+                    rejectSyn(src, srcPort, dst, dstPort, seq)
+                    return
+                }
+                val low = Gaming.enabled && Gaming.isGame(owner.pkg)
+                val created = TcpSession(
+                    key, src, srcPort, dst, dstPort, AppStats.entry(owner), low, seq, sink, selector, pool,
+                ) { tcp.remove(it.key, it) }
                 if (tcp.putIfAbsent(key, created) == null) created.start()
             } else if ((flags and PacketUtil.RST) == 0) {
                 val rstSeq = if ((flags and PacketUtil.ACK) != 0) ack else 0L
@@ -217,15 +246,34 @@ class MultiPathVpnService : VpnService() {
         val dstPort = PacketUtil.readU16(buf, off + 2)
         val payloadLength = minOf(PacketUtil.readU16(buf, off + 4), total - off) - 8
         if (payloadLength < 0) return
+        if (dstPort == 53 && Blocker.active()) {
+            val query = Blocker.parse(buf, off + 8, payloadLength)
+            if (query != null && Blocker.isBlocked(query.name)) {
+                Blocker.record(query.name)
+                val reply = Blocker.nxdomain(buf, off + 8, query.length)
+                sink.write(PacketUtil.udpPacket(dst, 53, src, srcPort, reply, 0, reply.size))
+                return
+            }
+        }
         val key = "$src:$srcPort>$dst:$dstPort"
         var session = udp[key]
         if (session == null) {
             val pool = this.pool ?: return
             val selector = this.selector ?: return
-            val created = UdpSession(key, src, srcPort, dst, dstPort, sink, selector, pool) { udp.remove(it.key, it) }
+            val owner = AppResolver.lookup(this, 17, src, srcPort, dst, dstPort)
+            if (AppBlock.isBlocked(owner.pkg)) return
+            val low = Gaming.enabled && Gaming.isGame(owner.pkg)
+            val created = UdpSession(
+                key, src, srcPort, dst, dstPort, AppStats.entry(owner), low, sink, selector, pool,
+            ) { udp.remove(it.key, it) }
             session = udp.putIfAbsent(key, created) ?: created
         }
         session.send(buf, off + 8, payloadLength)
+    }
+
+    private fun killBlocked() {
+        tcp.values.forEach { if (AppBlock.isBlocked(it.app.pkg)) it.shutdown(true) }
+        udp.values.forEach { if (AppBlock.isBlocked(it.app.pkg)) it.close() }
     }
 
     private fun sweepLoop() {
@@ -248,6 +296,8 @@ class MultiPathVpnService : VpnService() {
         tcp.clear()
         udp.clear()
         Bundles.flush()
+        AppBlock.listener = null
+        PingMonitor.stop(pingSupplier)
         releaseLocks()
         monitor?.stop()
         monitor = null

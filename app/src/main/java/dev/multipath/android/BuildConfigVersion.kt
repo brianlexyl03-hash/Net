@@ -1,5 +1,5 @@
 package dev.multipath.android
 
 object BuildConfigVersion {
-    const val NAME = "0.7.0"
+    const val NAME = "0.8.0"
 }

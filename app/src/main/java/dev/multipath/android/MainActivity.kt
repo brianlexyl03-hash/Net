@@ -65,6 +65,13 @@ class MainActivity : Activity() {
     private lateinit var sourcesBox: LinearLayout
     private lateinit var noteLine: TextView
     private lateinit var exitStatus: TextView
+    private lateinit var appsBox: LinearLayout
+    private lateinit var pingBox: LinearLayout
+    private lateinit var blockedLine: TextView
+    private lateinit var gamesButton: TextView
+    private var appsSignature = ""
+    private val appDetail = HashMap<String, TextView>()
+    private val pingSupplier: () -> List<LinkSnapshot> = { monitor.snapshots() }
     private lateinit var exitSwitch: Switch
     private var showDownload = true
     private var testing = false
@@ -73,8 +80,12 @@ class MainActivity : Activity() {
     private val ticker = object : Runnable {
         override fun run() {
             TrafficHistory.sample()
+            AppStats.sample()
             refreshHero()
             refreshGraph()
+            refreshApps()
+            refreshGaming()
+            refreshBlocker()
             mainHandler.postDelayed(this, 1_000)
         }
     }
@@ -85,6 +96,9 @@ class MainActivity : Activity() {
         window.navigationBarColor = bg
         ExtraWifi.init(this)
         Bundles.init(this)
+        Blocker.init(this)
+        AppBlock.init(this)
+        Gaming.init(this)
         ExitServer.refresh(this)
         scroller = ScrollView(this).apply {
             setBackgroundColor(bg)
@@ -111,12 +125,14 @@ class MainActivity : Activity() {
     override fun onStart() {
         super.onStart()
         monitor.start()
+        PingMonitor.start(pingSupplier)
         mainHandler.post(ticker)
     }
 
     override fun onStop() {
         Bundles.flush()
         mainHandler.removeCallbacks(ticker)
+        PingMonitor.stop(pingSupplier)
         monitor.stop()
         super.onStop()
     }
@@ -190,6 +206,43 @@ class MainActivity : Activity() {
         noteLine = text("", 12f, muted)
         sources.addView(noteLine)
         root.addView(sources)
+        addSpace(root, 12)
+
+        val apps = card()
+        apps.addView(text("Apps using internet", 11f, muted, true).apply { letterSpacing = 0.1f })
+        addSpace(apps, 6)
+        appsBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        apps.addView(appsBox)
+        root.addView(apps)
+        addSpace(root, 12)
+
+        val gaming = card()
+        gaming.addView(text("Gaming", 11f, muted, true).apply { letterSpacing = 0.1f })
+        addSpace(gaming, 6)
+        gaming.addView(switchRow("Gaming mode", "Chosen games use the fastest source", Gaming.enabled) { Gaming.setEnabled(it) })
+        addSpace(gaming, 10)
+        gamesButton = actionButton("Choose games", false) { showGamesDialog() }
+        gaming.addView(gamesButton)
+        addSpace(gaming, 10)
+        pingBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        gaming.addView(pingBox)
+        root.addView(gaming)
+        addSpace(root, 12)
+
+        val blocker = card()
+        blocker.addView(text("Blocker", 11f, muted, true).apply { letterSpacing = 0.1f })
+        addSpace(blocker, 6)
+        blocker.addView(switchRow("Block ads and trackers", "", Blocker.ads) { Blocker.setAds(it) })
+        addSpace(blocker, 8)
+        blocker.addView(switchRow("Block adult sites", "", Blocker.adult) { Blocker.setAdult(it) })
+        addSpace(blocker, 10)
+        blockedLine = text("Blocked 0", 13f, accent, true)
+        blocker.addView(blockedLine)
+        addSpace(blocker, 10)
+        blocker.addView(actionButton("Block a site", false) { showBlockSiteDialog() })
+        addSpace(blocker, 8)
+        blocker.addView(text("If ads still show, turn off Private DNS in Android settings.", 11f, muted))
+        root.addView(blocker)
         addSpace(root, 12)
 
         val awake = card()
@@ -674,6 +727,139 @@ class MainActivity : Activity() {
                 refreshSources()
             }
         }
+    }
+
+    private fun switchRow(title: String, subtitle: String, checked: Boolean, onChange: (Boolean) -> Unit): View {
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        val labels = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        labels.addView(text(title, 15f, white, true))
+        if (subtitle.isNotEmpty()) labels.addView(text(subtitle, 12f, muted))
+        row.addView(labels, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        val toggle = Switch(this)
+        toggle.isChecked = checked
+        toggle.setOnCheckedChangeListener { _, on -> onChange(on) }
+        row.addView(toggle)
+        return row
+    }
+
+    private fun refreshApps() {
+        if (!::appsBox.isInitialized) return
+        val top = AppStats.top(8)
+        if (top.isEmpty()) {
+            if (appsSignature != "-") {
+                appsBox.removeAllViews()
+                appDetail.clear()
+                appsBox.addView(text(if (MultiPathVpnService.running) "Waiting for traffic" else "Start to see which apps connect", 13f, muted))
+                appsSignature = "-"
+            }
+            return
+        }
+        val signature = top.joinToString("|") { it.pkg }
+        if (signature != appsSignature) {
+            appsBox.removeAllViews()
+            appDetail.clear()
+            for (entry in top) {
+                val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+                row.setPadding(0, dp(6), 0, dp(6))
+                val labels = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+                labels.addView(text(entry.label, 15f, white, true))
+                val detail = text("", 12f, muted)
+                labels.addView(detail)
+                appDetail[entry.pkg] = detail
+                row.addView(labels, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                if (entry.pkg.isNotEmpty() && entry.pkg != "android") {
+                    val toggle = Switch(this)
+                    toggle.isChecked = !AppBlock.isBlocked(entry.pkg)
+                    toggle.setOnCheckedChangeListener { _, allowed -> AppBlock.setBlocked(entry.pkg, !allowed) }
+                    row.addView(toggle)
+                }
+                appsBox.addView(row)
+            }
+            appsSignature = signature
+        }
+        for (entry in top) {
+            val total = entry.up.get() + entry.down.get()
+            val state = if (AppBlock.isBlocked(entry.pkg)) "Blocked" else String.format(Locale.US, "Down %.1f  ·  Up %.1f Mbps", entry.rateDown, entry.rateUp)
+            appDetail[entry.pkg]?.text = "$state  ·  ${Bundles.format(total)}"
+        }
+    }
+
+    private fun refreshGaming() {
+        if (!::pingBox.isInitialized) return
+        val games = Gaming.gameSet().size
+        gamesButton.text = if (games == 0) "Choose games" else "Choose games ($games)"
+        pingBox.removeAllViews()
+        val items = PingMonitor.stats.values.sortedBy { it.ping() ?: Long.MAX_VALUE }
+        if (items.isEmpty()) {
+            pingBox.addView(text("Measuring", 13f, muted))
+            return
+        }
+        items.forEachIndexed { index, stat ->
+            val ping = stat.ping()
+            val row = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            row.setPadding(0, dp(5), 0, dp(5))
+            val head = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            head.addView(text(stat.label, 14f, white, true), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            head.addView(text(if (ping == null) "No reply" else "$ping ms", 14f, if (index == 0 && ping != null) accent else white, true))
+            row.addView(head)
+            val jitter = stat.jitter()
+            row.addView(text("Jitter ${jitter ?: 0} ms  ·  Loss ${stat.lossPercent()}%" + if (index == 0 && ping != null && items.size > 1) "  ·  Fastest" else "", 12f, muted))
+            pingBox.addView(row)
+        }
+    }
+
+    private fun refreshBlocker() {
+        if (!::blockedLine.isInitialized) return
+        val recent = Blocker.recentBlocked()
+        blockedLine.text = "Blocked ${Blocker.blockedCount.get()}" + if (recent.isNotEmpty()) "  ·  last: ${recent.last()}" else ""
+    }
+
+    private fun showBlockSiteDialog() {
+        val input = EditText(this).apply {
+            hint = "example.com"
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+            setSingleLine(true)
+        }
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(22), dp(10), dp(22), 0)
+        }
+        box.addView(input)
+        box.addView(text("${Blocker.customCount()} site(s) in your list", 12f, muted).apply { setPadding(0, dp(10), 0, 0) })
+        AlertDialog.Builder(this)
+            .setTitle("Block a site")
+            .setView(box)
+            .setNegativeButton("Cancel", null)
+            .setNeutralButton("Clear my list") { _, _ -> Blocker.clearCustom() }
+            .setPositiveButton("Block") { _, _ ->
+                if (!Blocker.addCustom(input.text.toString())) toast("Enter a site like example.com")
+            }
+            .show()
+    }
+
+    private fun showGamesDialog() {
+        val pm = packageManager
+        val launcher = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+        val apps = pm.queryIntentActivities(launcher, 0)
+            .map { it.activityInfo.packageName to it.loadLabel(pm).toString() }
+            .distinctBy { it.first }
+            .filter { it.first != packageName }
+            .sortedBy { it.second.lowercase(Locale.US) }
+        if (apps.isEmpty()) {
+            toast("No apps found")
+            return
+        }
+        val chosen = Gaming.gameSet().toMutableSet()
+        val labels = apps.map { it.second }.toTypedArray()
+        val checked = BooleanArray(apps.size) { apps[it].first in chosen }
+        AlertDialog.Builder(this)
+            .setTitle("Choose games")
+            .setMultiChoiceItems(labels, checked) { _, which, isChecked ->
+                if (isChecked) chosen.add(apps[which].first) else chosen.remove(apps[which].first)
+            }
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Done") { _, _ -> Gaming.setGames(chosen) }
+            .show()
     }
 
     private fun toast(message: String) = Toast.makeText(this, message, Toast.LENGTH_SHORT).show()

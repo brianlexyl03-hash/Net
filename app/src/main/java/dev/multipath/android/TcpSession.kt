@@ -22,6 +22,8 @@ class TcpSession(
     private val clientPort: Int,
     private val serverIp: Int,
     private val serverPort: Int,
+    val app: AppStats.Entry,
+    private val lowLatency: Boolean,
     clientIsn: Long,
     private val sink: PacketSink,
     private val routes: RouteProvider,
@@ -61,6 +63,7 @@ class TcpSession(
     fun start() {
         VpnStats.tcpOpened.incrementAndGet()
         VpnStats.activeTcp.incrementAndGet()
+        app.flows.incrementAndGet()
         pool.execute { connectAndRelay() }
     }
 
@@ -73,7 +76,7 @@ class TcpSession(
         var openedTunnel: Shadowsocks.Tunnel? = null
         val exit = ExitServer.active
         for (attempt in 0 until 3) {
-            val candidate = routes.acquire(tried) ?: break
+            val candidate = routes.acquire(tried, lowLatency) ?: break
             tried.add(candidate.id)
             try {
                 if (exit != null) {
@@ -153,6 +156,7 @@ class TcpSession(
                 }
                 VpnStats.addUp(routeName, chunk.size.toLong())
                 Bundles.add(routeKey, chunk.size.toLong())
+                app.up.addAndGet(chunk.size.toLong())
                 lastActive = System.currentTimeMillis()
                 val left = queuedBytes.addAndGet(-chunk.size)
                 if (left < 32 * 1024) {
@@ -197,6 +201,7 @@ class TcpSession(
                     if (!sent) return
                     VpnStats.addDown(routeName, len.toLong())
                     Bundles.add(routeKey, len.toLong())
+                    app.down.addAndGet(len.toLong())
                     lastActive = System.currentTimeMillis()
                     offset += len
                 }
@@ -330,6 +335,7 @@ class TcpSession(
         used?.let { routes.release(it) }
         writeQueue.offer(finMark)
         VpnStats.activeTcp.decrementAndGet()
+        app.flows.decrementAndGet()
         onClosed(this)
     }
 

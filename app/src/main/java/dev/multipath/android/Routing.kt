@@ -13,7 +13,7 @@ fun interface PacketSink {
 class Route(val network: Network, val id: String, val label: String, val key: String = "")
 
 interface RouteProvider {
-    fun acquire(exclude: Set<String>): Route?
+    fun acquire(exclude: Set<String>, lowLatency: Boolean = false): Route?
     fun release(route: Route)
 }
 
@@ -91,13 +91,20 @@ class RouteSelector(
     private val active = ConcurrentHashMap<String, AtomicInteger>()
 
     @Synchronized
-    override fun acquire(exclude: Set<String>): Route? {
+    override fun acquire(exclude: Set<String>, lowLatency: Boolean): Route? {
         val all = monitor.snapshots()
         val pool = RoutePolicy.eligible(all, prefs).filter { it.id !in exclude }
         if (pool.isEmpty()) return null
-        val candidates = pool.map { FlowBalancer.candidate(it, active[it.id]?.get() ?: 0) }
-        val chosenId = FlowBalancer.chooseNext(candidates)?.id
-        val link = pool.firstOrNull { it.id == chosenId } ?: pool.first()
+        var link: LinkSnapshot? = null
+        if (lowLatency) {
+            link = pool.filter { it.validated && PingMonitor.stats[it.id]?.ping() != null }
+                .minByOrNull { PingMonitor.stats[it.id]?.ping() ?: Long.MAX_VALUE }
+        }
+        if (link == null) {
+            val candidates = pool.map { FlowBalancer.candidate(it, active[it.id]?.get() ?: 0) }
+            val chosenId = FlowBalancer.chooseNext(candidates)?.id
+            link = pool.firstOrNull { it.id == chosenId } ?: pool.first()
+        }
         active.getOrPut(link.id) { AtomicInteger() }.incrementAndGet()
         val label = RoutePolicy.nameOf(link, all)
         VpnStats.flowsByRoute.getOrPut(label) { AtomicLong() }.incrementAndGet()
