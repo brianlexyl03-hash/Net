@@ -21,7 +21,7 @@ A native Android Kotlin project inspired by the MIT-licensed desktop project [ud
 - Links to Android Wi-Fi and Internet settings; does not read Wi-Fi passwords. Wi-Fi networks you add yourself are stored encrypted on the device with the Android Keystore.
 - Includes unit tests for the flow-selection policy and a GitHub Actions workflow that runs tests and builds a debug APK artifact.
 
-## Traffic balancer (v0.8.0)
+## Traffic balancer (v0.9.0)
 
 Tap **Start balancing** to run an on-device VPN (`MultiPathVpnService`). It reads IPv4 packets from the TUN interface, terminates each TCP connection and UDP flow in a small user-space relay, and re-opens it over a socket bound to a specific Android `Network`. `FlowBalancer` picks the Wi-Fi or mobile-data route for every new connection; if connecting fails it retries on another route. No server or account is needed.
 
@@ -31,6 +31,11 @@ Tap **Start balancing** to run an on-device VPN (`MultiPathVpnService`). It read
 - IPv6 traffic bypasses the tunnel; DNS goes through 1.1.1.1 / 8.8.8.8 over the chosen route.
 - Only one VPN can be active at a time on Android; some OEM battery managers may stop background apps, so exclude MultiPath from battery optimisation.
 - Not Play-Store verified; test on your own devices (see `PLAY_STORE_READINESS.md`).
+
+### Also in 0.9.0 (no server needed)
+- **Network check:** one tap tests every source (name lookup, reach, web, public address) and says in plain words what is wrong, such as a captive sign-in page or redirected lookups. With two or more sources it also compares secure-site certificates across them to spot tampering. It lowers risk; it does not prove a network is safe.
+- **Wi-Fi nearby:** scans nearby networks (needs Location permission, an Android rule for Wi-Fi scans) and recommends the quietest 2.4 GHz and 5 GHz channel for your router.
+- **Connection log:** records when each source connects, loses internet or returns, with an online percentage per source since the app started tracking.
 
 ### Also in 0.8.0
 - **Blocker:** answers DNS lookups for ad, tracker and (optionally) adult domains with "does not exist", plus your own list. Apps using DNS-over-HTTPS or a hard-coded DNS bypass it. DNS-over-TLS (port 853) is refused while it is on.

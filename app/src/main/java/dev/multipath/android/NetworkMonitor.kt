@@ -189,6 +189,7 @@ class NetworkMonitor(
 
     private fun publish() {
         val copy = snapshots()
+        NetLog.observe(copy)
         mainHandler.post { onChanged(copy) }
     }
 }

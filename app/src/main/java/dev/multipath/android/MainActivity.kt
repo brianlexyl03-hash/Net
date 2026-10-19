@@ -10,6 +10,7 @@ import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
+import android.net.wifi.ScanResult
 import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
@@ -66,6 +67,10 @@ class MainActivity : Activity() {
     private lateinit var noteLine: TextView
     private lateinit var exitStatus: TextView
     private lateinit var appsBox: LinearLayout
+    private lateinit var checkBox: LinearLayout
+    private lateinit var radarBox: LinearLayout
+    private lateinit var logBox: LinearLayout
+    private var checking = false
     private lateinit var pingBox: LinearLayout
     private lateinit var blockedLine: TextView
     private lateinit var gamesButton: TextView
@@ -86,6 +91,7 @@ class MainActivity : Activity() {
             refreshApps()
             refreshGaming()
             refreshBlocker()
+            refreshLog()
             mainHandler.postDelayed(this, 1_000)
         }
     }
@@ -99,6 +105,7 @@ class MainActivity : Activity() {
         Blocker.init(this)
         AppBlock.init(this)
         Gaming.init(this)
+        NetLog.init(this)
         ExitServer.refresh(this)
         scroller = ScrollView(this).apply {
             setBackgroundColor(bg)
@@ -243,6 +250,36 @@ class MainActivity : Activity() {
         addSpace(blocker, 8)
         blocker.addView(text("If ads still show, turn off Private DNS in Android settings.", 11f, muted))
         root.addView(blocker)
+        addSpace(root, 12)
+
+        val check = card()
+        check.addView(text("Network check", 11f, muted, true).apply { letterSpacing = 0.1f })
+        addSpace(check, 8)
+        check.addView(actionButton("Check my network", true) { runNetworkCheck() })
+        addSpace(check, 8)
+        checkBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        check.addView(checkBox)
+        root.addView(check)
+        addSpace(root, 12)
+
+        val radar = card()
+        radar.addView(text("Wi-Fi nearby", 11f, muted, true).apply { letterSpacing = 0.1f })
+        addSpace(radar, 8)
+        radar.addView(actionButton("Scan nearby Wi-Fi", false) { startRadar() })
+        addSpace(radar, 8)
+        radarBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        radar.addView(radarBox)
+        root.addView(radar)
+        addSpace(root, 12)
+
+        val log = card()
+        log.addView(text("Connection log", 11f, muted, true).apply { letterSpacing = 0.1f })
+        addSpace(log, 8)
+        logBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        log.addView(logBox)
+        addSpace(log, 8)
+        log.addView(actionButton("Clear log", false) { NetLog.clear(); refreshLog() })
+        root.addView(log)
         addSpace(root, 12)
 
         val awake = card()
@@ -862,6 +899,124 @@ class MainActivity : Activity() {
             .show()
     }
 
+    private fun levelColor(level: Int): Int = when (level) {
+        1 -> accent
+        0 -> amber
+        2 -> blue
+        else -> red
+    }
+
+    private fun lineRow(label: String, detail: String, color: Int): View {
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        row.setPadding(0, dp(2), 0, dp(2))
+        row.addView(text(label, 12f, muted), LinearLayout.LayoutParams(dp(70), ViewGroup.LayoutParams.WRAP_CONTENT))
+        row.addView(text(detail, 12f, color), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        return row
+    }
+
+    private fun runNetworkCheck() {
+        if (checking) return
+        val links = monitor.snapshots()
+        if (links.isEmpty()) {
+            toast("No source found")
+            return
+        }
+        checking = true
+        checkBox.removeAllViews()
+        checkBox.addView(text("Checking", 13f, muted))
+        worker.execute {
+            val outcome = try { NetCheck.run(links) } catch (_: Exception) { null }
+            mainHandler.post {
+                checking = false
+                showCheck(outcome)
+            }
+        }
+    }
+
+    private fun showCheck(outcome: NetCheck.Outcome?) {
+        checkBox.removeAllViews()
+        if (outcome == null) {
+            checkBox.addView(text("Check failed. Try again.", 13f, red))
+            return
+        }
+        for (report in outcome.reports) {
+            checkBox.addView(text(report.name, 15f, white, true).apply { setPadding(0, dp(8), 0, 0) })
+            checkBox.addView(text(report.verdict, 13f, levelColor(report.level), true))
+            report.items.forEach { checkBox.addView(lineRow(it.label, it.detail, levelColor(it.state))) }
+        }
+        outcome.safety?.let {
+            checkBox.addView(text("Safety", 15f, white, true).apply { setPadding(0, dp(12), 0, 0) })
+            checkBox.addView(text(it.detail, 13f, levelColor(it.state), true))
+        }
+        if (outcome.safety == null && outcome.reports.size == 1) {
+            checkBox.addView(text("Add a second source to compare and check safety.", 12f, muted).apply { setPadding(0, dp(10), 0, 0) })
+        }
+    }
+
+    private fun startRadar() {
+        if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION), REQUEST_LOCATION)
+            return
+        }
+        radarBox.removeAllViews()
+        radarBox.addView(text("Scanning", 13f, muted))
+        WifiRadar.scan(this) { showRadar(it) }
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQUEST_LOCATION) {
+            if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) startRadar()
+            else toast("Location is needed to scan Wi-Fi")
+        }
+    }
+
+    private fun showRadar(results: List<ScanResult>?) {
+        radarBox.removeAllViews()
+        if (results.isNullOrEmpty()) {
+            radarBox.addView(text("Nothing found. Turn on Location and Wi-Fi, then try again.", 13f, amber))
+            return
+        }
+        val analysis = WifiRadar.analyze(results)
+        val best = ArrayList<String>()
+        analysis.best24?.let { best.add("2.4 GHz channel $it") }
+        if (analysis.nets.any { it.band == "5 GHz" }) analysis.best5?.let { best.add("5 GHz channel $it") }
+        if (best.isNotEmpty()) {
+            radarBox.addView(text("Quietest channel for your router", 12f, muted))
+            radarBox.addView(text(best.joinToString("  ·  "), 15f, accent, true))
+            addSpace(radarBox, 8)
+        }
+        for (net in analysis.nets.take(8)) {
+            val strength = when {
+                net.level >= -55 -> "Strong"
+                net.level >= -67 -> "Good"
+                net.level >= -80 -> "Weak"
+                else -> "Very weak"
+            }
+            val row = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            row.setPadding(0, dp(5), 0, dp(5))
+            row.addView(text(net.ssid, 14f, white, true))
+            row.addView(text("$strength (${net.level} dBm)  ·  ch ${net.channel}  ·  ${net.band}  ·  ${net.security}", 12f, if (net.security == "Open") amber else muted))
+            radarBox.addView(row)
+        }
+    }
+
+    private fun refreshLog() {
+        if (!::logBox.isInitialized) return
+        logBox.removeAllViews()
+        val uptime = NetLog.uptime()
+        val events = NetLog.recent(6)
+        if (uptime.isEmpty() && events.isEmpty()) {
+            logBox.addView(text("Nothing yet", 13f, muted))
+            return
+        }
+        for ((name, permille) in uptime) {
+            logBox.addView(text("$name  ·  ${String.format(Locale.US, "%.1f", permille / 10.0)}% online", 14f, white, true).apply { setPadding(0, dp(2), 0, dp(2)) })
+        }
+        if (events.isNotEmpty()) addSpace(logBox, 8)
+        events.forEach { logBox.addView(text(it, 12f, muted).apply { setPadding(0, dp(2), 0, dp(2)) }) }
+    }
+
     private fun toast(message: String) = Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
 
     private fun formatMbps(value: Float): String = String.format(Locale.US, "%.1f Mbps", value)
@@ -869,6 +1024,7 @@ class MainActivity : Activity() {
     companion object {
         private const val REQUEST_VPN = 41
         private const val REQUEST_NOTIFICATIONS = 42
+        private const val REQUEST_LOCATION = 43
     }
 
     private fun card(fill: Int = surface, outline: Int = line): LinearLayout = LinearLayout(this).apply {

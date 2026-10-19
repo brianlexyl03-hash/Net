@@ -103,6 +103,7 @@ class MultiPathVpnService : VpnService() {
         ExtraWifi.init(this)
         Bundles.init(this)
         Blocker.init(this)
+        NetLog.init(this)
         AppBlock.init(this)
         Gaming.init(this)
         ExitServer.refresh(this)
