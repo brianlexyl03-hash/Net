@@ -63,10 +63,6 @@ docs/                                     architecture and privacy policy
 .github/workflows/                        CI, release and Gradle-wrapper workflows
 ```
 
-## Development notes
-
-Built by [@brianlexyl03-hash](https://github.com/brianlexyl03-hash) with AI assistance (Claude). The maintainer directs the design, runs it on real devices and reviews every change; the commit history shows the order work happened in.
-
 ## Roadmap
 
 - Split `MainActivity` further and add instrumented tests for the VPN permission flow.
