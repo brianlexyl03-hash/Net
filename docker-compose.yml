@@ -1,0 +1,12 @@
+services:
+  test:
+    build: .
+    command: gradle testDebugUnitTest --no-daemon --stacktrace
+  lint:
+    build: .
+    command: gradle lintDebug --no-daemon --stacktrace
+  apk:
+    build: .
+    command: gradle assembleDebug --no-daemon --stacktrace
+    volumes:
+      - ./out:/workspace/app/build/outputs
