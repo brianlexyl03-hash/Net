@@ -1,82 +1,79 @@
-# MultiPath — Android network diagnostics (v0.5.0)
+# MultiPath
 
-A native Android Kotlin project inspired by the MIT-licensed desktop project [uditya-kumar/MultiPath](https://github.com/uditya-kumar/MultiPath). This is an independent Android companion prototype, not an official release or endorsed fork.
+[![Android CI](https://github.com/brianlexyl03-hash/Net/actions/workflows/android.yml/badge.svg)](https://github.com/brianlexyl03-hash/Net/actions/workflows/android.yml)
 
-## Visual and UX refresh (v0.5.0)
+An Android app that shares your phone's internet across every connection Android exposes (Wi-Fi, mobile data, USB tethering, extra Wi-Fi you add), with live traffic graphs, a DNS blocker, per-app controls and diagnostics. It runs entirely on the phone: there is no MultiPath server, account or analytics.
 
-- New custom MultiPath launcher icon: dark navy tile with a violet/cyan/mint multi-route mark; adaptive and round launcher icon resources included.
-- Replaced the placeholder letter avatar in the app header with the branded mark and simplified the top-level product identity.
-- Refined the home-screen hero copy, status chip, spacing, and button touch targets for clearer scanability on phones.
-- Kept the screen honest about what the prototype can do: route discovery and benchmarking, not system-wide bonded internet.
+Version 0.9.1 · Android 8.0+ (min SDK 26) · Kotlin, no third-party runtime dependencies.
 
-## Features in this revision
+## Features
 
-- Discovers internet-capable Wi-Fi, cellular and Ethernet routes that Android exposes to the app.
-- Shows validated internet status, interface name, Android-reported downstream/upstream estimates, HTTPS latency and measured download rate per route.
-- Lets users configure cellular, Wi-Fi and extra hotspot route limits, saved locally.
-- Provides an ordinary per-route download test capped at 4 MB per route.
-- Provides a concurrent multi-route benchmark capped at 2 MB per route (maximum 20 MB for ten exposed routes). It measures total bytes delivered during the same wall-clock interval, alongside individual route results.
-- Shows the fastest measured route, the sum of separately measured route rates, and the latest concurrent benchmark as clearly distinct metrics.
-- Can clear measurements and share a diagnostic report. The report includes device/Android version, route status and test results, but not Wi-Fi passwords, credentials or browsing history.
-- Links to Android Wi-Fi and Internet settings; does not read Wi-Fi passwords. Wi-Fi networks you add yourself are stored encrypted on the device with the Android Keystore.
-- Includes unit tests for the flow-selection policy and a GitHub Actions workflow that runs tests and builds a debug APK artifact.
+- **Traffic balancer.** A local VPN (`MultiPathVpnService`) terminates each TCP/UDP flow in a user-space relay and re-opens it over a socket bound to a specific Android `Network`. `FlowBalancer` picks the route per connection and retries on another if one fails.
+- **Live graph.** Real per-second download/upload per source, built from the bytes the relay moves.
+- **Sources.** Switch each source on or off, set a data limit per source, add extra Wi-Fi (Android 10+; whether two Wi-Fi links can run at once depends on the phone's chip).
+- **Apps using internet.** Per-app speed and totals, with a switch to cut an app off (Android 10+).
+- **Gaming mode.** Measures delay, jitter and loss per source and sends chosen games over the lowest-delay source.
+- **Blocker.** Answers DNS lookups for ad, tracker, adult and custom domains with "does not exist".
+- **Exit server (optional).** Encrypted Shadowsocks (AES-256-GCM) tunnel to a server you run, so websites see that server's location.
+- **Network check, Wi-Fi nearby, connection log.** Plain-language diagnosis, channel advice and uptime history.
+- **Keep awake.** Wi-Fi and wake locks while balancing, plus a battery-exemption prompt.
 
-## Traffic balancer (v0.9.0)
+## Build and test
 
-Tap **Start balancing** to run an on-device VPN (`MultiPathVpnService`). It reads IPv4 packets from the TUN interface, terminates each TCP connection and UDP flow in a small user-space relay, and re-opens it over a socket bound to a specific Android `Network`. `FlowBalancer` picks the Wi-Fi or mobile-data route for every new connection; if connecting fails it retries on another route. No server or account is needed.
+```bash
+./gradlew testDebugUnitTest   # unit tests (JDK 17 + Android SDK 35)
+./gradlew lintDebug
+./gradlew assembleDebug       # app/build/outputs/apk/debug/app-debug.apk
+docker compose run --rm test  # same tests, no local SDK needed
+```
 
-- Works on Android 8.0+ (min SDK 26) with the standard VPN consent dialog.
-- Keeps mobile data connected while Wi-Fi is the default so both links can carry traffic.
-- Per-connection balancing: many parallel connections speed up, a single download stays capped by its one route.
-- IPv6 traffic bypasses the tunnel; DNS goes through 1.1.1.1 / 8.8.8.8 over the chosen route.
-- Only one VPN can be active at a time on Android; some OEM battery managers may stop background apps, so exclude MultiPath from battery optimisation.
-- Not Play-Store verified; test on your own devices (see `PLAY_STORE_READINESS.md`).
+If `gradlew` is missing, run the **Add Gradle wrapper** workflow once from the Actions tab. CI (`.github/workflows/android.yml`) runs tests, lint and a debug build on every push, and publishes a debug APK under Releases for pushes to `main`. See `CONTRIBUTING.md` and `docs/ARCHITECTURE.md`.
 
-### Also in 0.9.0 (no server needed)
-- **Network check:** one tap tests every source (name lookup, reach, web, public address) and says in plain words what is wrong, such as a captive sign-in page or redirected lookups. With two or more sources it also compares secure-site certificates across them to spot tampering. It lowers risk; it does not prove a network is safe.
-- **Wi-Fi nearby:** scans nearby networks (needs Location permission, an Android rule for Wi-Fi scans) and recommends the quietest 2.4 GHz and 5 GHz channel for your router.
-- **Connection log:** records when each source connects, loses internet or returns, with an online percentage per source since the app started tracking.
+## Status
 
-### Also in 0.8.0
-- **Blocker:** answers DNS lookups for ad, tracker and (optionally) adult domains with "does not exist", plus your own list. Apps using DNS-over-HTTPS or a hard-coded DNS bypass it. DNS-over-TLS (port 853) is refused while it is on.
-- **Apps using internet:** live per-app speed and totals, with a switch to cut an app off. Needs Android 10 or newer (`getConnectionOwnerUid`) and the QUERY_ALL_PACKAGES permission, which Google Play restricts; fine for sideloaded APKs.
-- **Gaming mode:** measures delay, jitter and loss on every source every 2 seconds and sends chosen games over the lowest-delay source.
+A working prototype. The packet engine, DNS blocker, Shadowsocks framing, balancing policy, data limits and statistics are unit tested on the JVM. Behaviour that needs real hardware (VPN permission, two live networks, extra Wi-Fi, per-app lookup) is verified by hand using the CI-built debug APK, and results differ between phones. It is not Play Store ready; see `PLAY_STORE_READINESS.md`.
 
-### Also in 0.7.0
-- **Keep awake:** holds a Wi-Fi lock and wake lock while balancing and offers a battery-optimisation exemption. It cannot turn a radio back on if you or the OEM switch it off.
-- **Data limit per source:** set an allowance for mobile data, a hotspot or any source; new connections stop using it once the limit is reached. It counts MultiPath traffic only.
-- **Exit server:** optional encrypted exit (Shadowsocks, aes-256-gcm) so websites see your own server's location. You need a server; none is provided. While it is on, IPv6 and non-DNS UDP are blocked so nothing leaks around it.
+## Install
 
-## Important limitations
+Download `app-debug.apk` from the newest release, allow installs from unknown sources, open it, tap **Start**, and accept the VPN prompt. The APK is debug-signed, not Play Store signed.
 
-**This is not packet-level bonding.** True single-download bonding needs a remote bonding endpoint, which this project does not include. The concurrent benchmark remains a measurement tool.
+## Limitations
 
-### Hardware and Android route constraints
+- **Per-connection balancing, not packet bonding.** One connection uses one route, so a single download cannot exceed that route. Many parallel connections speed up. Bonding one connection across links needs a far-end server that this project does not include.
+- IPv6 traffic bypasses the tunnel unless an exit server is on (then it is blocked to prevent leaks).
+- Apps using DNS-over-HTTPS or their own DNS servers bypass the blocker.
+- Only one VPN can be active on Android at a time.
+- Some phones cannot hold two Wi-Fi connections or two SIM data connections at once; the app reports what Android exposes.
+- Data limits count only traffic relayed by MultiPath, which can differ from the carrier's meter.
+- Per-app features need Android 10+ and the `QUERY_ALL_PACKAGES` permission, which Google Play restricts. See `PLAY_STORE_READINESS.md` before publishing.
 
-- Redmi 15C has two physical SIM slots; the app cannot create extra SIM radios.
-- Safaricom/Airtel/Telkom carrier labels may not be exposed to ordinary apps for every route, so routes are labelled by transport rather than guessed carrier.
-- Android usually represents an external phone hotspot as a Wi-Fi route. Separate Wi-Fi/hotspot slot values are user limits, not a way to force the phone to connect to several Wi-Fi networks simultaneously.
-- The app can only test routes Android exposes to it. A USB-tethered connection may appear as Ethernet or another transport depending on Android/device support.
+## Privacy
 
-## Build and release
+- No backend, account or analytics. Measurements, counters and the connection log stay on the device.
+- Wi-Fi passwords you add and the exit-server password are stored encrypted with the Android Keystore and never sent anywhere except to the network or server you chose.
+- Speed tests contact `connectivitycheck.gstatic.com` and `speed.cloudflare.com`. The network check contacts `connectivitycheck.gstatic.com`, `api.ipify.org` and a few large websites to compare certificates.
+- With an exit server on, your traffic goes to that server. MultiPath does not operate any server.
 
-Open the project root in Android Studio with Android SDK Platform 35 and JDK 17. Allow Gradle sync, then run the `app` configuration on an Android 8.0+ device or emulator. CI runs unit tests, Android lint and a debug build. A version tag such as `v0.5.0` triggers a release bundle build; the resulting AAB is unsigned and still requires publisher signing, Play App Signing setup and release verification. See `PLAY_STORE_READINESS.md` before publication.
+## Project layout
 
-## Data usage and privacy
+```
+app/src/main/java/dev/multipath/android   app code (see docs/ARCHITECTURE.md)
+app/src/test/java/dev/multipath/android   JVM unit tests
+docs/                                     architecture and privacy policy
+.github/workflows/                        CI, release and Gradle-wrapper workflows
+```
 
-- The ordinary test downloads up to 4 MB per eligible route.
-- The concurrent test downloads up to 2 MB per eligible route, potentially 20 MB across ten routes.
-- The app asks for confirmation before starting speed tests because mobile-data charges may apply.
-- Tests contact `connectivitycheck.gstatic.com` and `speed.cloudflare.com`.
-- There is no backend, account, analytics, or stored browsing history in this prototype. Measurements are held in memory for the current app session.
+## Development notes
 
-## Technical details
+Built by [@brianlexyl03-hash](https://github.com/brianlexyl03-hash) with AI assistance (Claude). The maintainer directs the design, runs it on real devices and reviews every change; the commit history shows the order work happened in.
 
-- Kotlin / native Android SDK; min SDK 26, compile SDK 35, target SDK 34.
-- Android Gradle Plugin 8.7.3; Kotlin 2.0.21; Gradle 8.9; JDK 17.
-- The `FlowBalancer` scheduler is a tested policy prototype for assigning independent flows. It is not connected to an Android VPN/TUN engine in this revision.
+## Roadmap
 
+- Split `MainActivity` further and add instrumented tests for the VPN permission flow.
+- Optional far-end aggregator so one connection can use several links.
+- WireGuard exit option next to Shadowsocks.
+- Signed release builds and a Play Store listing.
 
-## Repository upload note
+## License
 
-This project is arranged with the Android project at the repository root. Extract it and upload the contents of this folder (including the hidden `.github` folder) to the root of your GitHub repository. The GitHub Actions workflow will then run automatically on push.
+See `LICENSE`.
