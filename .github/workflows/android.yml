@@ -69,7 +69,7 @@ jobs:
       - name: Build installable APK
         run: gradle assembleDebug --stacktrace
       - name: Publish APK on GitHub Releases
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: android-${{ github.sha }}
           name: MultiPath Android build ${{ github.sha }}
