@@ -31,7 +31,7 @@ jobs:
         run: gradle createDebugUnitTestCoverageReport --stacktrace
       - name: Upload coverage report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-report
           path: app/build/reports/coverage
@@ -42,7 +42,7 @@ jobs:
       - name: Build debug APK
         run: gradle assembleDebug --stacktrace
       - name: Upload debug APK for device QA
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: multipath-mobile-${{ github.sha }}-debug
           path: app/build/outputs/apk/debug/app-debug.apk
@@ -98,7 +98,7 @@ jobs:
       - name: Run release checks
         run: gradle testDebugUnitTest lintRelease bundleRelease --stacktrace
       - name: Upload release bundle for signing and review
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: multipath-mobile-${{ github.ref_name }}-unsigned-aab
           path: app/build/outputs/bundle/release/*.aab
