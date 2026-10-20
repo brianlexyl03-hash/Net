@@ -94,8 +94,9 @@ class MultiPathVpnService : VpnService() {
             } else {
                 startForeground(NOTIFICATION_ID, notification)
             }
-        } catch (_: Exception) {
+        } catch (error: Exception) {
             // The VPN still works without the notification on most devices.
+            Logger.w("vpn", "no foreground notification: ${error.message}")
         }
     }
 
@@ -124,7 +125,12 @@ class MultiPathVpnService : VpnService() {
         if (Build.VERSION.SDK_INT >= 29) {
             try { builder.setMetered(false) } catch (_: Exception) { }
         }
-        val descriptor = try { builder.establish() } catch (_: Exception) { null } ?: return false
+        val descriptor = try {
+            builder.establish()
+        } catch (error: Exception) {
+            Logger.e("vpn", "could not open the tunnel: ${error.message}")
+            null
+        } ?: return false
         tun = descriptor
         output = FileOutputStream(descriptor.fileDescriptor)
 
@@ -162,8 +168,9 @@ class MultiPathVpnService : VpnService() {
             }
             try {
                 handlePacket(buffer, length)
-            } catch (_: Exception) {
+            } catch (error: Exception) {
                 // never let one malformed packet stop the tunnel
+                Logger.w("vpn", "dropped a packet: ${error.message}")
             }
         }
         if (running) {

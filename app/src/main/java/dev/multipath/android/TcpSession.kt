@@ -97,7 +97,8 @@ class TcpSession(
                 }
                 usedRoute = candidate
                 break
-            } catch (_: Exception) {
+            } catch (error: Exception) {
+                Logger.w("tcp", "route ${candidate.label} failed for $key: ${error.message}")
                 routes.release(candidate)
             }
         }

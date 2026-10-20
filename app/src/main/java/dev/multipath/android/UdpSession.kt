@@ -53,7 +53,8 @@ class UdpSession(
                 VpnStats.udpOpened.incrementAndGet()
                 pool.execute { receiveLoop(s) }
                 return s
-            } catch (_: Exception) {
+            } catch (error: Exception) {
+                Logger.w("udp", "route ${candidate.label} failed for $key: ${error.message}")
                 try { s.close() } catch (_: Exception) { }
                 routes.release(candidate)
             }
