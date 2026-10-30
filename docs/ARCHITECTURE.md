@@ -1,48 +1,42 @@
 # Architecture
 
-MultiPath is an Android app that runs a local VPN and relays each connection over a chosen network (Wi-Fi, mobile data, USB tether, or an extra Wi-Fi it joined). There is no MultiPath server.
+MultiPath is designed as a relay-backed multipath VPN. The local app handles traffic interception,
+route selection, and packet classification. The relay server handles packet sequencing,
+reassembly, and return path scheduling for a single connection that spans multiple links.
 
 ## Packet path
 
 ```
 apps -> TUN interface -> MultiPathVpnService.packetLoop
-                           |-- Blocker (DNS for ads/trackers answered locally)
-                           |-- AppResolver (which app owns the flow) -> AppBlock
-                           |-- TcpSession / UdpSession
-                                  |-- RouteSelector -> FlowBalancer (picks a network per flow)
-                                  |-- socket bound to that Android Network
-                                  |-- optional Shadowsocks tunnel to an exit server
+                        |-- DnsPolicy (plain DNS, DoH, DoT enforcement)
+                        |-- Ipv6Policy (prevent IPv6 leaks when relay is offline)
+                        |-- AppResolver / AppBlock
+                        |-- TcpSession / UdpSession
+                                |-- RouteSelector -> Android Network selection
+                                |-- packet scheduler -> relay tunnel
+                                |-- Wi-Fi or cellular uplink by health/latency/throughput
+                                |-- relay reassembly and return scheduling
+                                                |
+                                                v
+                                 remote relay server (QUIC + MASQUE-like IP relay)
+                                                |
+                                                +--> packet ordering + reassembly
+                                                +--> load balancing across Wi‑Fi and cellular paths
+                                                +--> forward to the destination
+                                                +--> send replies back to the client
 ```
-
-## Main pieces
-
-| File | Responsibility |
-| --- | --- |
-| `MultiPathVpnService` | Owns the TUN device, parses IPv4, creates sessions, foreground notification, wake/Wi-Fi locks |
-| `TcpSession` | User-space TCP endpoint facing the app (handshake, sequence numbers, windowing) and a real socket facing the network |
-| `UdpSession` | One UDP flow; DNS goes through the exit tunnel when one is enabled |
-| `PacketUtil` | IPv4/TCP/UDP building, parsing and checksums (pure, unit tested) |
-| `FlowBalancer` | Scores routes by capacity, validation, latency and active flows (pure, unit tested) |
-| `Routing` | `RoutePolicy` (which sources are allowed), `RouteSelector`, `VpnStats` counters |
-| `NetworkMonitor` | Watches Android networks, keeps mobile data alive, merges in extra Wi-Fi |
-| `ExtraWifi`, `SecretStore` | Joins additional Wi-Fi with `WifiNetworkSpecifier`; passwords encrypted with Android Keystore |
-| `Shadowsocks`, `ExitServer` | Encrypted (AES-256-GCM) client for an exit server the user runs |
-| `Blocker` | DNS-level blocking of ad/tracker/adult/custom domains |
-| `Apps.kt` | `AppResolver`, `AppStats`, `AppBlock`, `Gaming` |
-| `PingMonitor` | Delay, jitter and loss per source every two seconds |
-| `Bundles` | Per-source data limits |
-| `NetCheck`, `WifiRadar`, `NetLog` | Diagnostics, nearby Wi-Fi scan, connection history |
-| `TrafficHistory`, `LiveGraphView` | Real per-second throughput and the chart |
-| `MainActivity` | Programmatic UI |
 
 ## Design decisions
 
-- **Per-connection balancing, not packet bonding.** A single connection uses one route. Real bonding needs a far-end server that speaks a multipath protocol.
-- **Our own sockets bypass the VPN** (`addDisallowedApplication`) and are bound to a specific `Network`, so there are no routing loops.
-- **No TUN checksum offload is assumed**; every generated packet carries valid IP and TCP checksums.
-- **IPv6** is blocked inside the tunnel only when an exit server is on (to avoid leaking the real address); otherwise it bypasses the tunnel.
-- **Pure logic is kept free of Android types** so it runs in plain JVM unit tests.
+- Local Android code is responsible for intercepting traffic and choosing routes.
+- The relay server is required for true single-flow bonding across multiple links.
+- IPv6 is captured and forwarded when the relay is available; otherwise it is blocked.
+- DNS is enforced by TUN-level interception and relay-side policy checks.
+- Per-app mode remains Android-10+ and must be scoped to avoid unnecessary broad package visibility.
 
-## Testing
+## Current repository status
 
-Unit tests live in `app/src/test`. They cover packet building, TCP session failure handling, Shadowsocks framing, the DNS blocker, flow balancing, bundles, traffic history and Wi-Fi channel analysis. Code that needs a device (VPN permission, real networks) is checked manually using the debug APK from CI.
+This repository is now structured around the correct model: local multipath routing plus a relay-backed
+multipath architecture. The original per-connection-only design is intentionally kept as a
+Phase 1 / Phase 2 baseline, while the current architecture explicitly recognizes the relay server as
+required for single-flow bonding.

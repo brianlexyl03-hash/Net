@@ -2,11 +2,25 @@ services:
   test:
     build: .
     command: gradle testDebugUnitTest --no-daemon --stacktrace
+
   lint:
     build: .
     command: gradle lintDebug --no-daemon --stacktrace
+
   apk:
     build: .
     command: gradle assembleDebug --no-daemon --stacktrace
     volumes:
       - ./out:/workspace/app/build/outputs
+
+  relay:
+    build:
+      context: ./relay
+    environment:
+      RELAY_BIND: ":443"
+      RELAY_TLS_CERT: "/certs/tls.crt"
+      RELAY_TLS_KEY: "/certs/tls.key"
+    volumes:
+      - ./relay/certs:/certs:ro
+    ports:
+      - "443:443/udp"
