@@ -1,0 +1,1 @@
+Version 0.9.1: Refactored the main screen, improved VPN/session error logging, expanded unit tests, and updated build and contributor documentation.

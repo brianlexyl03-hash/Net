@@ -1,0 +1,19 @@
+MultiPath Mobile helps you inspect and manage the network connections available to your Android phone.
+
+FEATURES
+• Monitor available Wi-Fi and mobile network connections.
+• View live upload and download traffic graphs.
+• Route separate TCP and UDP connections across available networks using Android's local VPN API.
+• Run network checks and compare latency and throughput.
+• Inspect nearby Wi-Fi signal strength, channels, bands and security types.
+• Use local DNS blocking for ads, trackers, adult domains and custom domains.
+• View per-app network activity and manage supported app access.
+• Optionally connect through an encrypted Shadowsocks server that you configure and operate yourself.
+
+IMPORTANT LIMITATIONS
+MultiPath balances separate connections; it does not combine multiple links into one faster connection. A single download remains limited by the network route used by that connection. Actual multi-network support depends on the Android version, device hardware, carrier and available connections. Only one Android VPN can be active at a time. IPv6 and apps using their own encrypted DNS may bypass some local filtering features.
+
+PRIVACY
+MultiPath has no app account, advertising SDK, analytics SDK or developer-operated backend. Network measurements and preferences are stored locally. Nearby Wi-Fi scanning requires Android location permission and is started by the user. Network tests contact third-party test endpoints. An optional exit server is supplied and operated by the user.
+
+MultiPath is free and open-source software released under the MIT License.
